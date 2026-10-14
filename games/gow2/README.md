@@ -59,6 +59,26 @@ Debug environment variables: `PS2_SCREENSHOT_EVERY=N`, `PS2_TRACE_SYSCALLS`
 - Slow: VU1 interpreter (~35% CPU) and the software GS rasterizer (~20%) dominate;
   the recompiled EE code itself is cheap.
 
+## Coverage audit
+
+Enumerate what the game uses statically instead of waiting for it to crash.
+IOP imports (`scripts/irx_import_audit.py . irx/*.IRX`, modules extracted with
+`scripts/isoextract.py`). Gaps as of the main menu (names from ps2sdk exports):
+
+| Import | Used by | Notes |
+|---|---|---|
+| `secrman:6` SecrAuthCard | SIO2D | Memory card authentication; likely why cards report "no device" |
+| `cdvdman:24` sceCdReadClock | MC2_D, MC2_S1 | Save timestamps |
+| `cdvdman:15` sceCdStop, `cdvdman:39` sceCdBreak | 989NOMID | Audio streaming stop/abort |
+| `thbase:43` GetSystemTimeLow | SMPD | |
+| `dmacman:28,32-35` sceSetSliceDMA, sceStartDMA, sceSetDMAPriority, sceEnable/DisableDMAChannel | SIO2MAN | Stubbed to return 0; SIO2 DMA (memory card transfers) |
+
+EE syscalls (`scripts/ee_syscall_audit.py . SCUS_974.81`): libkernel links stubs
+for ~140 syscalls but only 50 are reached by a `jal`. All 50 are dispatched since
+`0x6B` sceSifStopDma was wired up. Calls through function pointers are not seen.
+
+Still to audit: VU1 microprogram opcodes, GS registers/primitives.
+
 ## Roadmap
 
 1. Release build, cheap VU1 interpreter mode, faster IOP scheduler.
