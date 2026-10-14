@@ -22,6 +22,7 @@
 #include <cstring>
 #include <limits>
 #include <chrono>
+#include <cstdio>
 #include <atomic>
 #include <thread>
 #include <unordered_map>
@@ -2500,6 +2501,9 @@ void PS2Runtime::run()
     Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
     Texture2D frameTex = LoadTextureFromImage(blank);
     UnloadImage(blank);
+    // The guest frame (often 512x448) is stretched to the window; filter it like a TV
+    // would instead of duplicating pixels.
+    SetTextureFilter(frameTex, TEXTURE_FILTER_BILINEAR);
 
     std::atomic<bool> gameThreadFinished{false};
 
@@ -2569,9 +2573,10 @@ void PS2Runtime::run()
         const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
         const float screenWidth = static_cast<float>(GetScreenWidth());
         const float screenHeight = static_cast<float>(GetScreenHeight());
-        const float scale = std::min(screenWidth / srcWidth, screenHeight / srcHeight);
-        const float dstWidth = srcWidth * scale;
-        const float dstHeight = srcHeight * scale;
+        // The GS CRTC stretches whatever framebuffer width the game uses across a 4:3 TV.
+        constexpr float kDisplayAspect = 4.0f / 3.0f;
+        const float dstHeight = std::min(screenHeight, screenWidth / kDisplayAspect);
+        const float dstWidth = dstHeight * kDisplayAspect;
         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
         const Rectangle dstRect{
             (screenWidth - dstWidth) * 0.5f,
@@ -2579,6 +2584,41 @@ void PS2Runtime::run()
             dstWidth,
             dstHeight};
         DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+
+        // Opt-in speed report: PS2_PERF_STATS=1 prints guest VSyncs and display flips
+        // (DISPFB1 changes) per wall-clock second.
+        {
+            static const bool perfStats = []()
+            {
+                const char *env = std::getenv("PS2_PERF_STATS");
+                return env && env[0] != '\0' && env[0] != '0';
+            }();
+            if (perfStats)
+            {
+                static auto windowStart = std::chrono::steady_clock::now();
+                static uint64_t windowVsync = m_eeScheduler->currentVSyncTick();
+                static uint64_t lastDispfb = m_memory.gs().dispfb1;
+                static uint32_t flips = 0;
+                const uint64_t dispfb = m_memory.gs().dispfb1;
+                if (dispfb != lastDispfb)
+                {
+                    lastDispfb = dispfb;
+                    ++flips;
+                }
+                const auto now = std::chrono::steady_clock::now();
+                const double seconds = std::chrono::duration<double>(now - windowStart).count();
+                if (seconds >= 2.0)
+                {
+                    const uint64_t vsync = m_eeScheduler->currentVSyncTick();
+                    std::fprintf(stderr, "[perf] vsync/s=%.1f flips/s=%.1f\n",
+                                 static_cast<double>(vsync - windowVsync) / seconds, flips / seconds);
+                    windowStart = now;
+                    windowVsync = vsync;
+                    flips = 0;
+                }
+            }
+        }
+
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);
