@@ -807,11 +807,22 @@ void register_ps2_vu1_tests()
                 uint8_t opcode;
                 uint32_t latency;
             };
+            // Index = (funct bits 10..6 << 2) | bits 1..0, e.g. ESIN is 0x7FC -> 0x7C.
+            // 0x77 and 0x7F are unassigned; 0x7B is WAITP.
             constexpr EfuCase cases[] = {
-                {0x70u, 11u}, {0x71u, 18u}, {0x72u, 18u}, {0x73u, 24u},
-                {0x74u, 54u}, {0x75u, 54u}, {0x76u, 12u}, {0x77u, 18u},
-                {0x78u, 12u}, {0x79u, 29u}, {0x7Au, 12u}, {0x7Cu, 54u},
-                {0x7Du, 44u}};
+                {0x70u, 11u}, // ESADD
+                {0x71u, 18u}, // ERSADD
+                {0x72u, 18u}, // ELENG
+                {0x73u, 24u}, // ERLENG
+                {0x74u, 54u}, // EATANxy
+                {0x75u, 54u}, // EATANxz
+                {0x76u, 12u}, // ESUM
+                {0x78u, 12u}, // ESQRT
+                {0x79u, 18u}, // ERSQRT
+                {0x7Au, 12u}, // ERCPR
+                {0x7Cu, 29u}, // ESIN
+                {0x7Du, 54u}, // EATAN
+                {0x7Eu, 44u}}; // EEXP
 
             for (const EfuCase &efu : cases)
             {

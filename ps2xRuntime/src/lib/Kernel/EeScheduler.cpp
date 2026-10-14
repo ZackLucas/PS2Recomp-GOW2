@@ -1260,6 +1260,10 @@ int EeScheduler::setIrqCauseEnabled(bool dmac, uint32_t cause, bool enabled)
 
 void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
 {
+    // Hardware (e.g. a DMA completing) can raise an IRQ before any guest has run on this
+    // scheduler; with no executor bound no handler can have been registered either.
+    if (m_executorThread == std::thread::id{})
+        return;
     assertExecutor();
     const uint32_t mask = dmac ? m_enabledDmacMask : m_enabledIntcMask;
     if (cause < 32u && (mask & (1u << cause)) == 0u)
