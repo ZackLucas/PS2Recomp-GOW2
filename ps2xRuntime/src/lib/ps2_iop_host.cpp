@@ -3,6 +3,7 @@
 #include "ps2_runtime.h"
 #include "ps2_stubs.h"
 #include "Kernel/Stubs/SIF.h"
+#include "Kernel/Stubs/CD.h"
 #include "runtime/ps2_memory.h"
 #include "Kernel/Stubs/MemoryCard.h"
 #include "Kernel/Syscalls/Common.h"
@@ -286,6 +287,15 @@ std::string PS2IopHostAdapter::hostPath(ps2x::iop::HostPathKind kind) const
     }
 }
 
+static bool isCdromGuestPath(std::string_view path)
+{
+    std::string prefix(path.substr(0, 5));
+    std::transform(prefix.begin(), prefix.end(), prefix.begin(),
+                   [](unsigned char c)
+                   { return static_cast<char>(std::tolower(c)); });
+    return prefix == "cdrom";
+}
+
 std::string PS2IopHostAdapter::translateGuestPath(std::string_view path) const
 {
     const PS2Runtime::IoPaths &paths = PS2Runtime::getIoPaths();
@@ -293,6 +303,18 @@ std::string PS2IopHostAdapter::translateGuestPath(std::string_view path) const
     std::filesystem::path hostPath;
     if (!m_runtime.vfs().resolveHostPath(path, mounts, hostPath))
         return {};
+
+    // A cdrom0: file missing from the loose-file root may still live in the disc
+    // image; hand the guest path to openHostFile so it can serve it from there.
+    std::error_code error;
+    if (isCdromGuestPath(path) && !paths.cdImage.empty() &&
+        !std::filesystem::is_regular_file(hostPath, error))
+    {
+        uint32_t lbn = 0u;
+        uint32_t size = 0u;
+        if (ps2_stubs::lookupCdImageFile(std::string(path), lbn, size))
+            return {};
+    }
     return hostPath.string();
 }
 
@@ -303,7 +325,24 @@ uint64_t PS2IopHostAdapter::openHostFile(std::string_view path)
         return 0u;
     }
 
-    const std::filesystem::path hostPath{std::string(path)};
+    std::filesystem::path hostPath{std::string(path)};
+    uint64_t baseOffset = 0u;
+    uint64_t imageFileSize = 0u;
+    bool fromImage = false;
+    if (isCdromGuestPath(path))
+    {
+        uint32_t lbn = 0u;
+        uint32_t fileSize = 0u;
+        const std::filesystem::path image = PS2Runtime::getIoPaths().cdImage;
+        if (!image.empty() && ps2_stubs::lookupCdImageFile(std::string(path), lbn, fileSize))
+        {
+            hostPath = image;
+            baseOffset = static_cast<uint64_t>(lbn) * 2048u;
+            imageFileSize = fileSize;
+            fromImage = true;
+        }
+    }
+
 #if defined(_WIN32)
     std::FILE *stream = ::_wfopen(hostPath.c_str(), L"rb");
 #else
@@ -315,7 +354,7 @@ uint64_t PS2IopHostAdapter::openHostFile(std::string_view path)
     }
 
     std::error_code error;
-    const uint64_t size = std::filesystem::file_size(hostPath, error);
+    const uint64_t size = fromImage ? imageFileSize : std::filesystem::file_size(hostPath, error);
     if (error)
     {
         std::fclose(stream);
@@ -328,7 +367,7 @@ uint64_t PS2IopHostAdapter::openHostFile(std::string_view path)
     {
         handle = m_nextHostFileHandle++;
     }
-    m_hostFiles.emplace(handle, HostFile{stream, size});
+    m_hostFiles.emplace(handle, HostFile{stream, size, baseOffset});
     return handle;
 }
 
@@ -364,12 +403,23 @@ bool PS2IopHostAdapter::readHostFile(uint64_t handle,
         return false;
     }
 
+    // Files served from a disc image are a window into the image stream.
+    if (offset >= it->second.size)
+    {
+        return true; // at or past EOF: nothing to read, like fread on a plain file
+    }
+    if (it->second.baseOffset != 0u)
+    {
+        size = static_cast<size_t>(std::min<uint64_t>(size, it->second.size - offset));
+    }
+    const uint64_t streamOffset = it->second.baseOffset + offset;
+
 #if defined(_WIN32)
-    if (offset > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
-        _fseeki64(it->second.stream, static_cast<int64_t>(offset), SEEK_SET) != 0)
+    if (streamOffset > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        _fseeki64(it->second.stream, static_cast<int64_t>(streamOffset), SEEK_SET) != 0)
 #else
-    if (offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) ||
-        fseeko(it->second.stream, static_cast<off_t>(offset), SEEK_SET) != 0)
+    if (streamOffset > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) ||
+        fseeko(it->second.stream, static_cast<off_t>(streamOffset), SEEK_SET) != 0)
 #endif
     {
         return false;
@@ -515,6 +565,26 @@ bool PS2IopHostAdapter::sendSifCommand(uint32_t commandId,
                                          commandId,
                                          packet,
                                          packetSize);
+}
+
+bool PS2IopHostAdapter::readPad(int port, ps2x::iop::PadInput &input)
+{
+    // One controller, in port 1 (SIO2 port 0), fed by the host keyboard/gamepad.
+    if (port != 0)
+    {
+        return false;
+    }
+    uint8_t data[32] = {};
+    if (!m_runtime.padBackend().readState(port, 0, data, sizeof(data)))
+    {
+        return false;
+    }
+    input.buttons = static_cast<uint16_t>(data[2] | (static_cast<uint16_t>(data[3]) << 8));
+    input.rightX = data[4];
+    input.rightY = data[5];
+    input.leftX = data[6];
+    input.leftY = data[7];
+    return true;
 }
 
 void PS2IopHostAdapter::log(ps2x::iop::LogLevel level, std::string_view message)

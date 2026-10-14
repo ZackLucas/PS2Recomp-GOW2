@@ -379,6 +379,51 @@ namespace ps2_stubs
         setReturnS32(ctx, 0x14);
     }
 
+    // int sceCdReadDvdDualInfo(int *onDual, u_int *layer1Start)
+    // Reports whether the disc is dual layer and the LSN where layer 1 begins.
+    // Both values come from the configured disc image; without one the disc is
+    // reported as single layer.
+    void sceCdReadDvdDualInfo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)runtime;
+        const uint32_t onDualAddr = getRegU32(ctx, 4);
+        const uint32_t layer1Addr = getRegU32(ctx, 5);
+
+        uint32_t onDual = 0;
+        uint32_t layer1Start = 0;
+
+        uint64_t totalSectors = 0;
+        if (tryGetCdImageTotalSectors(totalSectors))
+        {
+            // ISO9660 volume space size (PVD at sector 16, offset 80) covers layer 0 only
+            // on a dual-layer dump, so any sector past it lives on layer 1.
+            uint8_t pvd[kCdSectorSize] = {};
+            if (readHostRange(getCdImagePath(), 16ull * kCdSectorSize, pvd, sizeof(pvd)) &&
+                std::memcmp(pvd + 1, "CD001", 5) == 0)
+            {
+                const uint32_t layer0Sectors = static_cast<uint32_t>(pvd[80]) |
+                                               (static_cast<uint32_t>(pvd[81]) << 8) |
+                                               (static_cast<uint32_t>(pvd[82]) << 16) |
+                                               (static_cast<uint32_t>(pvd[83]) << 24);
+                if (layer0Sectors != 0u && totalSectors > layer0Sectors)
+                {
+                    onDual = 1;
+                    layer1Start = layer0Sectors;
+                }
+            }
+        }
+
+        if (uint8_t *p = getMemPtr(rdram, onDualAddr))
+        {
+            std::memcpy(p, &onDual, sizeof(onDual));
+        }
+        if (uint8_t *p = getMemPtr(rdram, layer1Addr))
+        {
+            std::memcpy(p, &layer1Start, sizeof(layer1Start));
+        }
+        setReturnS32(ctx, 1);
+    }
+
     void sceCdGetReadPos(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         setReturnU32(ctx, g_cdStreamingLbn);
@@ -985,5 +1030,10 @@ namespace ps2_stubs
             *status = 0;
         }
         setReturnS32(ctx, 1);
+    }
+
+    bool lookupCdImageFile(const std::string &ps2Path, uint32_t &lbnOut, uint32_t &sizeOut)
+    {
+        return lookupInCdImage(ps2Path, lbnOut, sizeOut);
     }
 }

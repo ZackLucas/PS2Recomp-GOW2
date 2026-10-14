@@ -665,6 +665,15 @@ bool PS2Runtime::syncCoreSubsystems()
     }
 
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
+    m_gs.setInterruptCallback([this](uint32_t)
+                              {
+                                  if (m_eeScheduler)
+                                  {
+                                      EeEvent event{};
+                                      event.type = EeEventType::GsInterrupt;
+                                      m_eeScheduler->postEvent(event);
+                                  }
+                              });
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                     { m_gs.processGIFPacket(data, size); });
     m_memory.setGifArbiter(&m_gifArbiter);
@@ -922,6 +931,9 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
         if (!scratch)
         {
             maxLoadedRdramEnd = std::max(maxLoadedRdramEnd, static_cast<uint32_t>(segmentMemEnd));
+            std::lock_guard<std::mutex> lock(m_systemArenaMutex);
+            m_systemArenaEnd = std::min(m_systemArenaEnd, physAddr);
+            m_systemArenaInitialized = false;
         }
 
         if (ph.flags & 0x1u) // PF_X
@@ -1396,10 +1408,19 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 
     RecompiledFunction targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
+    const uint32_t callerRa = getRegU32(ctx, 31);
     targetFn(rdram, ctx, this);
 
     if (isStopRequested() || ctx->pc == 0u)
     {
+        // The callee handed back pc=0 (typically jr $ra with $ra=0). Log the innermost few.
+        static std::atomic<int> zeroPcReports{0};
+        if (ctx->pc == 0u && !isStopRequested() && zeroPcReports.fetch_add(1) < 4)
+        {
+            std::cerr << "[guest-branch:pc0] callee=0x" << std::hex << targetPc << " source=0x" << sourcePc
+                      << " ra_at_call=0x" << callerRa << " ra_now=0x" << getRegU32(ctx, 31)
+                      << " sp=0x" << getRegU32(ctx, 29) << std::dec << std::endl;
+        }
         return false;
     }
 
@@ -1957,6 +1978,100 @@ void PS2Runtime::guestFree(uint32_t guestAddr)
     freeGuestBlockLocked(guestAddr);
 }
 
+namespace
+{
+    // Start of the EE kernel area left free once the BIOS is HLE'd; retail ELFs load at 0x00100000.
+    constexpr uint32_t kSystemArenaBase = 0x00080000u;
+}
+
+uint32_t PS2Runtime::systemMalloc(uint32_t size, uint32_t alignment)
+{
+    if (size != 0u)
+    {
+        std::lock_guard<std::mutex> lock(m_systemArenaMutex);
+        if (!m_systemArenaInitialized)
+        {
+            m_systemArenaFree.clear();
+            m_systemArenaUsed.clear();
+            if (m_systemArenaEnd > kSystemArenaBase)
+            {
+                m_systemArenaFree.emplace(kSystemArenaBase, m_systemArenaEnd - kSystemArenaBase);
+            }
+            m_systemArenaInitialized = true;
+        }
+
+        const uint32_t align = std::max<uint32_t>(16u, alignment);
+        const uint64_t allocSize = (static_cast<uint64_t>(size) + 15u) & ~uint64_t{15u};
+        for (auto it = m_systemArenaFree.begin(); it != m_systemArenaFree.end(); ++it)
+        {
+            const uint64_t start = it->first;
+            const uint64_t end = start + it->second;
+            const uint64_t aligned = (start + align - 1u) / align * align;
+            if (aligned + allocSize > end)
+            {
+                continue;
+            }
+
+            m_systemArenaFree.erase(it);
+            if (aligned > start)
+            {
+                m_systemArenaFree.emplace(static_cast<uint32_t>(start), static_cast<uint32_t>(aligned - start));
+            }
+            if (aligned + allocSize < end)
+            {
+                m_systemArenaFree.emplace(static_cast<uint32_t>(aligned + allocSize),
+                                          static_cast<uint32_t>(end - aligned - allocSize));
+            }
+            const uint32_t addr = static_cast<uint32_t>(aligned);
+            m_systemArenaUsed[addr] = static_cast<uint32_t>(allocSize);
+            return addr;
+        }
+    }
+
+    // No room below the ELF (or zero-sized request): keep the old behaviour.
+    return guestMalloc(size, alignment);
+}
+
+void PS2Runtime::systemFree(uint32_t guestAddr)
+{
+    if (guestAddr == 0u)
+    {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_systemArenaMutex);
+        const auto used = m_systemArenaUsed.find(guestAddr);
+        if (used != m_systemArenaUsed.end())
+        {
+            uint32_t start = used->first;
+            uint32_t size = used->second;
+            m_systemArenaUsed.erase(used);
+
+            auto next = m_systemArenaFree.lower_bound(start);
+            if (next != m_systemArenaFree.end() && start + size == next->first)
+            {
+                size += next->second;
+                next = m_systemArenaFree.erase(next);
+            }
+            if (next != m_systemArenaFree.begin())
+            {
+                auto prev = std::prev(next);
+                if (prev->first + prev->second == start)
+                {
+                    start = prev->first;
+                    size += prev->second;
+                    m_systemArenaFree.erase(prev);
+                }
+            }
+            m_systemArenaFree.emplace(start, size);
+            return;
+        }
+    }
+
+    guestFree(guestAddr);
+}
+
 uint32_t PS2Runtime::guestHeapBase() const
 {
     std::lock_guard<std::mutex> lock(m_guestHeapMutex);
@@ -1987,6 +2102,14 @@ uint32_t PS2Runtime::reserveAsyncCallbackStack(uint32_t size, uint32_t alignment
     if (allocSize == 0u)
     {
         return 0u;
+    }
+
+    // Interrupt/callback stacks live in the system arena (EE kernel area), like the BIOS'
+    // own stacks. Carving them from the top of RAM collides with games that put their main
+    // thread stack there (SetupThread with stack = -1).
+    if (const uint32_t block = systemMalloc(allocSize, normalizedAlignment); block != 0u)
+    {
+        return block + allocSize - 0x10u;
     }
 
     std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -2207,6 +2330,22 @@ const EeScheduler &PS2Runtime::eeScheduler() const
 void PS2Runtime::postEeEvent(EeEvent event)
 {
     m_eeScheduler->postEvent(event);
+}
+
+uint32_t PS2Runtime::readCop0Count(const R5900Context *ctx) const noexcept
+{
+    const uint32_t now = m_eeScheduler ? static_cast<uint32_t>(m_eeScheduler->eeCycle()) : 0u;
+    return (ctx ? ctx->cop0_count : 0u) + now;
+}
+
+void PS2Runtime::writeCop0Count(R5900Context *ctx, uint32_t value) noexcept
+{
+    if (!ctx)
+    {
+        return;
+    }
+    const uint32_t now = m_eeScheduler ? static_cast<uint32_t>(m_eeScheduler->eeCycle()) : 0u;
+    ctx->cop0_count = value - now;
 }
 
 bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
@@ -2445,6 +2584,47 @@ void PS2Runtime::run()
             m_debugUiDrawCallback(*this, m_debugUiUserData);
         }
         EndDrawing();
+
+        // Opt-in capture for headless debugging: PS2_SCREENSHOT_EVERY=N saves frame_NNNNNN.png
+        // into the working directory every N presented frames.
+        {
+            static const int screenshotEvery = []()
+            {
+                const char *env = std::getenv("PS2_SCREENSHOT_EVERY");
+                return env ? std::max(0, std::atoi(env)) : 0;
+            }();
+            static uint64_t presentedFrames = 0;
+            ++presentedFrames;
+            if (screenshotEvery > 0 && (presentedFrames % static_cast<uint64_t>(screenshotEvery)) == 0)
+            {
+                char name[64];
+                std::snprintf(name, sizeof(name), "frame_%06llu.png", static_cast<unsigned long long>(presentedFrames));
+                TakeScreenshot(name);
+            }
+
+            // PS2_DUMP_THREADS=N prints the EE thread list every N presented frames.
+            static const int dumpThreadsEvery = []()
+            {
+                const char *env = std::getenv("PS2_DUMP_THREADS");
+                return env ? std::max(0, std::atoi(env)) : 0;
+            }();
+            if (dumpThreadsEvery > 0 && m_eeScheduler && (presentedFrames % static_cast<uint64_t>(dumpThreadsEvery)) == 0)
+            {
+                const EeKernelSnapshot snap = m_eeScheduler->snapshot();
+                std::cerr << "[threads] frame=" << presentedFrames << " running=" << snap.runningThreadId << std::endl;
+                for (const EeThreadSnapshot &t : snap.threads)
+                {
+                    std::cerr << "  id=" << t.id << " status=" << static_cast<int>(t.status)
+                              << " wait=" << static_cast<int>(t.waitReason) << " waitId=" << t.waitId
+                              << " prio=" << t.currentPriority << std::hex << " pc=0x" << t.pc << " ra=0x" << t.ra
+                              << " entry=0x" << t.entry << std::dec << std::endl;
+                }
+                for (const EeSemaphoreSnapshot &sem : snap.semaphores)
+                {
+                    std::cerr << "  sema id=" << sem.id << " count=" << sem.count << " waiters=" << sem.waiters << std::endl;
+                }
+            }
+        }
 
         if (WindowShouldClose())
         {

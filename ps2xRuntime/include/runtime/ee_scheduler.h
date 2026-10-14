@@ -105,6 +105,7 @@ struct GuestInvocation
 struct GuestThread
 {
     int id = 0;
+    uint32_t lastDispatchPc = 0; // diagnostics: pc of the last top-level dispatch
     R5900Context context{};
     uint32_t entry = 0;
     uint32_t stack = 0;
@@ -236,6 +237,7 @@ enum class EeEventType : uint8_t
     Dmac,
     ExternalWake,
     Alarm,
+    GsInterrupt,
 };
 
 struct EeEvent
@@ -279,6 +281,7 @@ public:
     void requestStop();
     void postEvent(EeEvent event);
     [[nodiscard]] bool checkpointDue(uint32_t cycles = kGeneratedCheckpointCycles) noexcept;
+    [[nodiscard]] uint64_t eeCycle() const noexcept { return m_eeCycle; }
     void accountCycles(uint32_t cycles) noexcept;
     [[nodiscard]] bool isExecutingGuest() const noexcept;
 

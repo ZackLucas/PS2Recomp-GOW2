@@ -52,6 +52,7 @@ namespace ps2_stubs
     void sceCdDelayThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdDiskReady(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdGetDiskType(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void sceCdReadDvdDualInfo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdGetReadPos(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdGetToc(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
@@ -81,4 +82,7 @@ namespace ps2_stubs
     void sceCdStStop(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdSyncS(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdTrayReq(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+
+    // Resolves a cdrom0: path inside the configured disc image (ISO9660).
+    bool lookupCdImageFile(const std::string &ps2Path, uint32_t &lbnOut, uint32_t &sizeOut);
 }

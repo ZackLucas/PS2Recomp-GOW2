@@ -322,6 +322,112 @@ namespace
         }
     }
 
+    // Looks a path up in the ISO9660 directory tree of the configured disc image.
+    // Returns the real LBN so guest code that mixes file names and absolute
+    // sector reads (e.g. TOC-driven engines) sees the layout of the original disc.
+    bool lookupInCdImage(const std::string &ps2Path, uint32_t &lbnOut, uint32_t &sizeOut)
+    {
+        const std::filesystem::path image = getCdImagePath();
+        if (image.empty())
+        {
+            return false;
+        }
+
+        std::ifstream file(image, std::ios::binary);
+        if (!file.is_open())
+        {
+            return false;
+        }
+
+        auto readSectors = [&](uint32_t lbn, uint32_t size, std::vector<uint8_t> &out) -> bool
+        {
+            out.assign(size, 0);
+            file.clear();
+            file.seekg(static_cast<std::streamoff>(static_cast<uint64_t>(lbn) * kCdSectorSize), std::ios::beg);
+            file.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(size));
+            return file.gcount() == static_cast<std::streamsize>(size);
+        };
+        auto rd32 = [](const uint8_t *p) -> uint32_t
+        {
+            return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+                   (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+        };
+
+        std::vector<uint8_t> pvd;
+        if (!readSectors(16, kCdSectorSize, pvd) || std::memcmp(pvd.data() + 1, "CD001", 5) != 0)
+        {
+            return false;
+        }
+
+        uint32_t dirLbn = rd32(pvd.data() + 156 + 2);
+        uint32_t dirSize = rd32(pvd.data() + 156 + 10);
+
+        const std::filesystem::path relative(normalizeCdPathNoPrefix(ps2Path));
+        std::vector<std::string> parts;
+        for (const auto &part : relative)
+        {
+            const std::string name = part.string();
+            if (!name.empty() && name != "/" && name != ".")
+            {
+                parts.push_back(toLowerAscii(name));
+            }
+        }
+        if (parts.empty())
+        {
+            return false;
+        }
+
+        for (std::size_t depth = 0; depth < parts.size(); ++depth)
+        {
+            std::vector<uint8_t> dir;
+            if (dirSize == 0 || dirSize > 64u * 1024u * 1024u || !readSectors(dirLbn, dirSize, dir))
+            {
+                return false;
+            }
+
+            const bool last = (depth + 1 == parts.size());
+            bool found = false;
+            std::size_t off = 0;
+            while (off < dir.size())
+            {
+                const uint8_t len = dir[off];
+                if (len == 0)
+                {
+                    off = (off / kCdSectorSize + 1) * kCdSectorSize;
+                    continue;
+                }
+                if (off + len > dir.size() || len < 34)
+                {
+                    break;
+                }
+
+                const uint8_t nameLen = dir[off + 32];
+                std::string name(reinterpret_cast<const char *>(&dir[off + 33]), nameLen);
+                const bool isDir = (dir[off + 25] & 0x02) != 0;
+                if (!(nameLen == 1 && (name[0] == '\0' || name[0] == '\1')))
+                {
+                    if (toLowerAscii(stripIsoVersionSuffix(name)) == parts[depth] && isDir != last)
+                    {
+                        dirLbn = rd32(&dir[off + 2]);
+                        dirSize = rd32(&dir[off + 10]);
+                        found = true;
+                        break;
+                    }
+                }
+                off += len;
+            }
+
+            if (!found)
+            {
+                return false;
+            }
+        }
+
+        lbnOut = dirLbn;
+        sizeOut = dirSize;
+        return true;
+    }
+
     bool registerCdFile(const std::string &ps2Path, CdFileEntry &entryOut)
     {
         const std::string key = cdPathKey(ps2Path);
@@ -337,6 +443,23 @@ namespace
             entryOut = existing->second;
             g_lastCdError = 0;
             return true;
+        }
+
+        {
+            uint32_t imageLbn = 0;
+            uint32_t imageSize = 0;
+            if (lookupInCdImage(ps2Path, imageLbn, imageSize))
+            {
+                CdFileEntry entry;
+                entry.hostPath = getCdImagePath();
+                entry.sizeBytes = imageSize;
+                entry.baseLbn = imageLbn;
+                entry.sectors = sectorsForBytes(imageSize);
+                g_cdFilesByKey.emplace(key, entry);
+                entryOut = entry;
+                g_lastCdError = 0;
+                return true;
+            }
         }
 
         const std::filesystem::path root = getCdRootPath();
@@ -442,7 +565,11 @@ namespace
                 continue;
             }
 
-            const uint64_t relativeLbn = static_cast<uint64_t>(lbn - entry.baseLbn);
+            // Entries resolved from the disc image carry real LBNs, so the byte
+            // offset is absolute inside the image rather than relative to a file.
+            const bool fromImage = !getCdImagePath().empty() && entry.hostPath == getCdImagePath();
+            const uint64_t relativeLbn = fromImage ? static_cast<uint64_t>(lbn)
+                                                   : static_cast<uint64_t>(lbn - entry.baseLbn);
             const uint64_t offset = relativeLbn * kCdSectorSize;
             return readHostRange(entry.hostPath, offset, dst, byteCount);
         }

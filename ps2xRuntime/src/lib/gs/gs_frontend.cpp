@@ -111,6 +111,18 @@ GS::GS()
     reset();
 }
 
+void GS::raiseCsrEvent(uint32_t csrBit)
+{
+    // The interrupt is edge-triggered on the CSR bit going high; the game acknowledges by writing
+    // the bit back to CSR. IMR holds the mask bits SIGMSK (8) and FINISHMSK (9).
+    const uint64_t previous = m_privRegs->csr.fetch_or(csrBit);
+    if ((previous & csrBit) != 0u || !m_interruptCallback)
+        return;
+    const uint32_t maskBit = csrBit == 0x1u ? (1u << 8) : csrBit == 0x2u ? (1u << 9) : 0u;
+    if (maskBit != 0u && (m_privRegs->imr & maskBit) == 0u)
+        m_interruptCallback(csrBit);
+}
+
 void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
 {
     m_localMemoryStorage = vram;
@@ -725,7 +737,7 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
             if ((nloop * nreg) & 1)
                 offset += 8;
         }
-        else if (flg == GIF_FMT_IMAGE)
+        else // GIF_FMT_IMAGE; FLG=3 ("disabled") behaves like IMAGE on hardware.
         {
             uint32_t imageBytes = nloop * 16;
             if (offset + imageBytes > sizeBytes)
@@ -1470,7 +1482,7 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
             uint32_t lo = static_cast<uint32_t>(m_privRegs->siglblid & 0xFFFFFFFF);
             lo = (lo & ~mask) | (id & mask);
             m_privRegs->siglblid = (m_privRegs->siglblid & 0xFFFFFFFF00000000ULL) | lo;
-            m_privRegs->csr.fetch_or(0x1);
+            raiseCsrEvent(0x1);
         }
         break;
     }
@@ -1482,7 +1494,7 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
             m_backend->Sync(GSSyncReason::Finish);
         }
         if (m_privRegs)
-            m_privRegs->csr.fetch_or(0x2);
+            raiseCsrEvent(0x2);
         break;
     }
     case GS_REG_LABEL:

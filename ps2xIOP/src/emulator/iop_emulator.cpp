@@ -23,6 +23,8 @@
 #include <optional>
 #include <span>
 #include <sstream>
+#include <cstdlib>
+#include <unordered_map>
 #include <utility>
 
 namespace ps2x::iop::detail
@@ -37,6 +39,7 @@ namespace ps2x::iop::detail
         constexpr uint32_t kCallStackSize = 0x2000u;
         constexpr uint32_t kCallStackCapacity = (kCallStackLimit - kCallStackBase) / kCallStackSize;
         constexpr uint64_t kCdvdCompletionCycles = 128u;
+        constexpr uint64_t kSifDmaCompletionCycles = 128u;
 
         uint32_t physicalAddress(uint32_t address)
         {
@@ -105,11 +108,19 @@ namespace ps2x::iop::detail
               heaplib(memory),
               intrman(memory),
               timrman(),
-              ioman(memory),
+              ioman(host, memory),
               cpuCore(memory),
               imports(memory),
               loadcore(memory, imports)
         {
+            memory.setSio2PadReader([this](int port, IopPadInput &input)
+                                    {
+                                        PadInput pad;
+                                        if (!host.readPad(port, pad))
+                                            return false;
+                                        input = IopPadInput{pad.buttons, pad.rightX, pad.rightY, pad.leftX, pad.leftY};
+                                        return true;
+                                    });
             reset();
         }
 
@@ -176,7 +187,7 @@ namespace ps2x::iop::detail
 
         void schedulePendingDma()
         {
-            if (const auto dma = memory.takeDmaStart())
+            while (const auto dma = memory.takeDmaStart())
                 pendingDmaInterrupts[dma->irq] = totalCycles + dma->delayCycles;
         }
 
@@ -239,6 +250,25 @@ namespace ps2x::iop::detail
 
         ImportDisposition dispatchImport(const IopImportCall &call, CpuState &cpu)
         {
+            // Opt-in trace (PS2_TRACE_IOP_IMPORTS=1): first calls of each import, then every 4096th.
+            static const bool traceImports = []()
+            {
+                const char *env = std::getenv("PS2_TRACE_IOP_IMPORTS");
+                return env && env[0] != '\0' && env[0] != '0';
+            }();
+            if (traceImports)
+            {
+                const std::string key = std::string(call.library) + ':' + std::to_string(call.ordinal);
+                const uint64_t count = ++importTraceCounts[key];
+                if (count <= 4u || (count % 4096u) == 0u)
+                {
+                    std::ostringstream out;
+                    out << "[IOP import] " << key << " pc=0x" << std::hex << cpu.pc << " ra=0x" << cpu.gpr[31]
+                        << " a0=0x" << cpu.gpr[4] << " a1=0x" << cpu.gpr[5] << " a2=0x" << cpu.gpr[6]
+                        << " count=" << std::dec << count;
+                    log(LogLevel::Info, out.str());
+                }
+            }
             const uint32_t a0 = cpu.gpr[4];
             auto setV0 = [&](uint32_t value)
             {
@@ -318,9 +348,15 @@ namespace ps2x::iop::detail
                 return ImportDisposition::Handled;
             if (iequals(call.library, "sifman"))
             {
-                return rpc.dispatchSifManImport(call.ordinal, cpu)
-                           ? ImportDisposition::Handled
-                           : ImportDisposition::Missing;
+                if (!rpc.dispatchSifManImport(call.ordinal, cpu))
+                    return ImportDisposition::Missing;
+                if (const auto callback = rpc.takeDmaCompletionCallback())
+                {
+                    pendingGuestCallbacks.emplace(
+                        totalCycles + kSifDmaCompletionCycles,
+                        ScheduledGuestCallback{callback->function, callback->gp, callback->argument});
+                }
+                return ImportDisposition::Handled;
             }
             if (iequals(call.library, "vblank") && vblank.dispatchImport(call.ordinal, cpu, totalCycles))
                 return ImportDisposition::Handled;
@@ -614,20 +650,52 @@ namespace ps2x::iop::detail
             module.entry = loaded.entry;
             module.gp = loaded.gp;
 
-            uint32_t args = 0u;
+            // modload calls start(argc, argv): argv[0] is the module path, then one entry per
+            // NUL-separated string of the argument buffer, terminated by a NULL pointer.
+            std::vector<std::string> argvStrings{module.path};
             if (arguments && argumentSize)
             {
-                args = allocate(argumentSize + 1u, 16u);
-                if (args)
+                const char *text = static_cast<const char *>(arguments);
+                size_t begin = 0u;
+                for (size_t i = 0; i <= argumentSize; ++i)
                 {
-                    writeRam(args, arguments, argumentSize);
-                    write8(args + argumentSize, 0u);
+                    if (i == argumentSize || text[i] == '\0')
+                    {
+                        if (i > begin || i < argumentSize)
+                            argvStrings.emplace_back(text + begin, i - begin);
+                        begin = i + 1u;
+                    }
                 }
+                if (argvStrings.size() > 1u && argvStrings.back().empty())
+                    argvStrings.pop_back();
             }
-            const uint32_t startResult = callFunction(module.entry, argumentSize, args, 0u, 0u, module.gp);
-            if (args)
-                freeAllocation(args);
+
+            const uint32_t argc = static_cast<uint32_t>(argvStrings.size());
+            uint32_t stringsSize = 0u;
+            for (const std::string &argument : argvStrings)
+                stringsSize += static_cast<uint32_t>(argument.size()) + 1u;
+            const uint32_t pointersOffset = (stringsSize + 3u) & ~3u;
+            const uint32_t argBlock = allocate(pointersOffset + (argc + 1u) * 4u, 16u);
+            uint32_t argv = 0u;
+            if (argBlock)
+            {
+                uint32_t cursor = argBlock;
+                argv = argBlock + pointersOffset;
+                for (uint32_t i = 0; i < argc; ++i)
+                {
+                    const std::string &argument = argvStrings[i];
+                    writeRam(cursor, argument.data(), argument.size());
+                    write8(cursor + static_cast<uint32_t>(argument.size()), 0u);
+                    write32(argv + i * 4u, cursor);
+                    cursor += static_cast<uint32_t>(argument.size()) + 1u;
+                }
+                write32(argv + argc * 4u, 0u);
+            }
+            const uint32_t startResult = callFunction(module.entry, argBlock ? argc : 0u, argv, 0u, 0u, module.gp);
             module.resident = startResult == 0u || startResult == 2u;
+            // Resident modules may keep pointers into their argv strings.
+            if (argBlock && !module.resident)
+                freeAllocation(argBlock);
             result.moduleId = module.id;
             result.startResult = static_cast<int32_t>(startResult);
             modules[module.id] = std::move(module);
@@ -654,8 +722,14 @@ namespace ps2x::iop::detail
 
         ModuleLoadResult loadModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
         {
+            // sceSifLoadModuleBuffer takes an IOP address: the EE first copies the IRX
+            // into IOP RAM (sceSifAllocIopHeap + sceSifSetDma). Fall back to EE RAM
+            // for callers that hand over an EE-side buffer.
             std::vector<uint8_t> image;
-            if (!IopModuleLoader::readElfFromGuest(host, guestAddress, image))
+            const auto readIop = [this](uint32_t address, void *destination, size_t size)
+            { return memory.readRam(address, destination, size); };
+            if (!IopModuleLoader::readElf(readIop, guestAddress, image) &&
+                !IopModuleLoader::readElfFromGuest(host, guestAddress, image))
                 return {true, -1, -1};
             std::ostringstream tag;
             tag << "buffer@0x" << std::hex << guestAddress;
@@ -671,6 +745,7 @@ namespace ps2x::iop::detail
             kernel.terminateThreadsInRange(it->second.base, it->second.size);
             rpc.removeServersInRange(it->second.base, it->second.size);
             imports.eraseRange(it->second.base, it->second.size);
+            (void)memory.freeAllocation(it->second.base);
             modules.erase(it);
             kernel.cleanupDeadThreads();
             if (result)
@@ -679,6 +754,8 @@ namespace ps2x::iop::detail
         }
 
         IopHost &host;
+        std::unordered_map<std::string, uint64_t> importTraceCounts;
+        bool inRpcTurnaround = false;
         IopMemory memory;
         IopSysmem sysmem;
         IopKernel kernel;
@@ -750,7 +827,17 @@ namespace ps2x::iop::detail
 
     RpcResult IopEmulator::handleRpc(const RpcRequest &request)
     {
-        return m_impl->rpc.handleRpc(request, *m_impl);
+        RpcResult result = m_impl->rpc.handleRpc(request, *m_impl);
+        // The server function ran synchronously. On hardware the IOP keeps running before the
+        // EE sees the reply, so threads the request woke up (e.g. a streamer picking up a single
+        // request slot) get to act before the EE can issue the next call.
+        if (result.handled && !m_impl->inRpcTurnaround)
+        {
+            m_impl->inRpcTurnaround = true;
+            m_impl->runCycles(kRpcTurnaroundCycles);
+            m_impl->inRpcTurnaround = false;
+        }
+        return result;
     }
 
     bool IopEmulator::hasRpcServer(uint32_t sid) const noexcept

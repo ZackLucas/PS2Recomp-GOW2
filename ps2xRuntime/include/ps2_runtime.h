@@ -20,6 +20,7 @@
 #include <mutex>
 #include <filesystem>
 #include <memory>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -380,6 +381,11 @@ public:
     uint32_t guestCalloc(uint32_t count, uint32_t size, uint32_t alignment = 16u);
     uint32_t guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t alignment = 16u);
     void guestFree(uint32_t guestAddr);
+    // Guest-visible scratch memory for the runtime's own HLE buffers (GIF/SIF packets...).
+    // It lives in the EE kernel area below the boot ELF, so it never overlaps memory
+    // the game manages itself (some games carve their own heap out of all RAM past _end).
+    uint32_t systemMalloc(uint32_t size, uint32_t alignment = 16u);
+    void systemFree(uint32_t guestAddr);
     uint32_t guestHeapBase() const;
     uint32_t guestHeapEnd() const;
     uint32_t guestHeapLimit() const;
@@ -394,6 +400,9 @@ public:
     const EeScheduler &eeScheduler() const;
     void postEeEvent(EeEvent event);
     bool eeCheckpointDue(uint32_t cycles = 32u) noexcept;
+    // COP0 Count runs on the EE scheduler clock; ctx->cop0_count keeps the offset applied by MTC0.
+    uint32_t readCop0Count(const R5900Context *ctx) const noexcept;
+    void writeCop0Count(R5900Context *ctx, uint32_t value) noexcept;
     [[noreturn]] void eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc);
 
     struct EeExitHandlerRegistration
@@ -506,6 +515,11 @@ private:
     std::unordered_map<uint32_t, uint32_t> m_eeSyscallOverrides;
     std::unordered_set<uint32_t> m_eeSyscallMirrorAddresses;
     mutable std::mutex m_guestHeapMutex;
+    std::mutex m_systemArenaMutex;
+    std::map<uint32_t, uint32_t> m_systemArenaFree;           // start -> size
+    std::unordered_map<uint32_t, uint32_t> m_systemArenaUsed; // start -> size
+    uint32_t m_systemArenaEnd = 0x00100000u;
+    bool m_systemArenaInitialized = false;
     mutable std::mutex m_asyncCallbackStackMutex;
     std::vector<GuestHeapBlock> m_guestHeapBlocks;
     uint32_t m_guestHeapBase = 0x00100000u;

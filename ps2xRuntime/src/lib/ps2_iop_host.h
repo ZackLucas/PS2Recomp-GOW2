@@ -84,6 +84,7 @@ public:
                              uint32_t *resultAddress) override;
     bool sendSifCommand(uint32_t commandId, const void *packet, size_t packetSize) override;
 
+    bool readPad(int port, ps2x::iop::PadInput &input) override;
     void log(ps2x::iop::LogLevel level, std::string_view message) override;
 
 private:
@@ -101,6 +102,8 @@ private:
     {
         std::FILE *stream = nullptr;
         uint64_t size = 0u;
+        // Byte offset of the file inside its stream; non-zero for files served from a disc image.
+        uint64_t baseOffset = 0u;
     };
     mutable std::mutex m_hostFileMutex;
     std::unordered_map<uint64_t, HostFile> m_hostFiles;

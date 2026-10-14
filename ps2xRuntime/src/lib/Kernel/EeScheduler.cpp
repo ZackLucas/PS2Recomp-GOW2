@@ -246,6 +246,11 @@ void EeScheduler::run()
                 }
                 continue;
             }
+            // A thread whose top-level function hands back pc=0 has returned (or jumped) to
+            // address 0; worth a line in the log since games rarely let threads fall off.
+            std::cerr << "[EeScheduler] thread " << running->id << " ended: last dispatched pc=0x" << std::hex
+                      << running->lastDispatchPc << " ra=0x" << getRegU32(&context, 31) << " sp=0x"
+                      << getRegU32(&context, 29) << std::dec << std::endl;
             makeDormant(*running);
             m_currentThreadId = 0;
             copyMainContextToRuntime();
@@ -296,6 +301,7 @@ void EeScheduler::run()
         {
             m_insideInterrupt = !running->invocations.empty() && running->invocations.back().kind == GuestInvocationKind::Interrupt;
             m_guestExecuting.store(true, std::memory_order_release);
+            running->lastDispatchPc = context.pc;
             function(m_rdram, &context, &m_runtime);
             m_guestExecuting.store(false, std::memory_order_release);
             m_insideInterrupt = false;
@@ -1909,6 +1915,9 @@ void EeScheduler::processEvent(const EeEvent &event)
         dispatchIrq(false, 3u);
         break;
     case EeEventType::Dmac:
+        break;
+    case EeEventType::GsInterrupt:
+        dispatchIrq(false, 0u); // INTC cause 0: GS
         break;
     case EeEventType::Alarm:
     {

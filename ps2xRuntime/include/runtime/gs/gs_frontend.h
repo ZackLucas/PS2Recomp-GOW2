@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -104,6 +105,9 @@ public:
 
     void init(uint8_t *vram, uint32_t vramSize, struct GSRegisters *privRegs = nullptr);
     void reset();
+    // Called with the CSR event bit (SIGNAL = 0x1, FINISH = 0x2) when the event is unmasked in IMR,
+    // i.e. when the GS would raise its INTC interrupt.
+    void setInterruptCallback(std::function<void(uint32_t csrBit)> callback) { m_interruptCallback = std::move(callback); }
     void setRasterBackend(std::unique_ptr<GSRasterBackend> backend);
 
     void processGIFPacket(const uint8_t *data, uint32_t sizeBytes);
@@ -180,6 +184,8 @@ private:
     uint8_t *m_localMemoryStorage = nullptr;
     uint32_t m_localMemorySize = 0u;
     struct GSRegisters *m_privRegs = nullptr;
+    std::function<void(uint32_t)> m_interruptCallback;
+    void raiseCsrEvent(uint32_t csrBit);
     mutable std::recursive_mutex m_stateMutex;
     mutable std::mutex m_backendLifetimeMutex;
     mutable std::mutex m_presentationMutex;

@@ -197,6 +197,11 @@ int main(int argc, char *argv[])
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
         // This hook is to prevent leak rlimgui deps to recompiler etc
         PS2DebugPanel debugPanel;
+        // F1 toggles the panel; PS2_HIDE_DEBUG_UI=1 starts with it hidden.
+        if (const char *hide = std::getenv("PS2_HIDE_DEBUG_UI"); hide && hide[0] != '\0' && hide[0] != '0')
+        {
+            debugPanel.setVisible(false);
+        }
         runtime.setDebugUiCallbacks(
             [](PS2Runtime &rt, void *userData)
             {
@@ -224,6 +229,28 @@ int main(int argc, char *argv[])
         {
             std::cerr << "Failed to load ELF file: " << filePathStr << std::endl;
             return 1;
+        }
+
+        // Optional disc image: argv[2] or the PS2_CD_IMAGE environment variable.
+        // Lets guests that address the disc by absolute LBN (e.g. dual-layer DVDs) work.
+        {
+            std::filesystem::path cdImage;
+            if (argc >= 3 && argv[2] && argv[2][0] != '\0')
+            {
+                cdImage = argv[2];
+            }
+            else if (const char *envImage = std::getenv("PS2_CD_IMAGE"))
+            {
+                cdImage = envImage;
+            }
+
+            if (!cdImage.empty())
+            {
+                PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
+                paths.cdImage = cdImage;
+                PS2Runtime::setIoPaths(paths);
+                std::cout << "Using disc image: " << cdImage.string() << std::endl;
+            }
         }
 
         runtime.run();

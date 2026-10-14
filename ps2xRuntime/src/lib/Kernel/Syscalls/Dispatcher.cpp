@@ -1,4 +1,7 @@
 #include "Common.h"
+#include <cstdlib>
+#include <iostream>
+#include <unordered_map>
 #include "Dispatcher.h"
 #include "System.h"
 
@@ -6,6 +9,27 @@ namespace ps2_syscalls
 {
     bool dispatchNumericSyscall(uint32_t syscallNumber, uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        // Opt-in trace: PS2_TRACE_SYSCALLS=1 prints the first calls of every syscall number
+        // and then every 4096th one, to spot what a guest is waiting on without a debugger.
+        // PS2_TRACE_SYSCALLS=2 logs every call.
+        static const int traceSyscalls = []()
+        {
+            const char *env = std::getenv("PS2_TRACE_SYSCALLS");
+            return env ? std::atoi(env) : 0;
+        }();
+        if (traceSyscalls > 0)
+        {
+            static std::unordered_map<uint32_t, uint64_t> counts;
+            const uint64_t n = ++counts[syscallNumber];
+            if (traceSyscalls >= 2 || n <= 8 || (n % 4096) == 0)
+            {
+                std::cerr << "[syscall] num=0x" << std::hex << syscallNumber
+                          << " a0=0x" << getRegU32(ctx, 4) << " a1=0x" << getRegU32(ctx, 5)
+                          << " a2=0x" << getRegU32(ctx, 6) << " a3=0x" << getRegU32(ctx, 7)
+                          << " ra=0x" << getRegU32(ctx, 31) << std::dec << " count=" << n << std::endl;
+            }
+        }
+
         if (dispatchSyscallOverride(syscallNumber, rdram, ctx, runtime))
         {
             return true;

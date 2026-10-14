@@ -851,7 +851,7 @@ void VU1Interpreter::progressXgkick()
         m_xgkick.cycleCredit -= 2u;
         if (m_xgkick.copiedBytes > XgkickPipeline::kBufferSize - 16u)
         {
-            reportReservedInstruction(false, 0xFFFFFFFBu);
+            reportXgkickFault("packet exceeds the PATH1 buffer");
             m_xgkick.active = false;
             return;
         }
@@ -879,18 +879,12 @@ void VU1Interpreter::progressXgkick()
                 tagBytes += static_cast<uint64_t>(nloop) * nreg * 16u;
             else if (format == 1u)
                 tagBytes += ((static_cast<uint64_t>(nloop) * nreg + 1u) & ~1ull) * 8u;
-            else if (format == 2u)
+            else // IMAGE; FLG=3 ("disabled") behaves like IMAGE on hardware.
                 tagBytes += static_cast<uint64_t>(nloop) * 16u;
-            else
-            {
-                reportReservedInstruction(false, 0xFFFFFFF8u);
-                m_xgkick.active = false;
-                return;
-            }
 
             if (tagBytes > XgkickPipeline::kBufferSize - qwordOffset)
             {
-                reportReservedInstruction(false, 0xFFFFFFFBu);
+                reportXgkickFault("GIFtag payload exceeds the PATH1 buffer");
                 m_xgkick.active = false;
                 return;
             }
@@ -911,6 +905,20 @@ void VU1Interpreter::progressXgkick()
                 m_xgkick.currentTagEop = false;
             }
         }
+    }
+}
+
+void VU1Interpreter::reportXgkickFault(const char *reason)
+{
+    // PATH1 walked off a malformed packet (e.g. a GIFtag chain left uninitialised
+    // before the microprogram writes its own terminator). Real hardware keeps the VU
+    // running, so drop the packet without stopping the microprogram.
+    static uint32_t reported = 0;
+    if (reported < 8u)
+    {
+        ++reported;
+        RUNTIME_ERROR("[VU1 XGKICK] " << reason << " cycle=" << m_cycle << " pc=0x" << std::hex << m_state.pc
+                                      << " src=0x" << m_xgkick.sourceAddress << std::dec << '\n');
     }
 }
 
@@ -1429,19 +1437,19 @@ VU1Interpreter::InstructionUsage VU1Interpreter::decodeLowerUsage(uint32_t lower
         usage.latency = 2u;
         readVi(viS);
         break;
-    case 0x70:
-    case 0x71:
-    case 0x72:
-    case 0x73:
-    case 0x74:
-    case 0x75:
-    case 0x76:
-    case 0x77:
-    case 0x78:
-    case 0x79:
-    case 0x7A:
-    case 0x7C:
-    case 0x7D:
+    case 0x70: // ESADD
+    case 0x71: // ERSADD
+    case 0x72: // ELENG
+    case 0x73: // ERLENG
+    case 0x74: // EATANxy
+    case 0x75: // EATANxz
+    case 0x76: // ESUM
+    case 0x78: // ESQRT
+    case 0x79: // ERSQRT
+    case 0x7A: // ERCPR
+    case 0x7C: // ESIN
+    case 0x7D: // EATAN
+    case 0x7E: // EEXP
         if (m_unit == Unit::VU0)
         {
             usage.reserved = true;
@@ -1455,7 +1463,7 @@ VU1Interpreter::InstructionUsage VU1Interpreter::decodeLowerUsage(uint32_t lower
             break;
         case 0x71:
         case 0x72:
-        case 0x77:
+        case 0x79:
             usage.latency = 18u;
             break;
         case 0x73:
@@ -1463,7 +1471,7 @@ VU1Interpreter::InstructionUsage VU1Interpreter::decodeLowerUsage(uint32_t lower
             break;
         case 0x74:
         case 0x75:
-        case 0x7C:
+        case 0x7D:
             usage.latency = 54u;
             break;
         case 0x76:
@@ -1471,10 +1479,10 @@ VU1Interpreter::InstructionUsage VU1Interpreter::decodeLowerUsage(uint32_t lower
         case 0x7A:
             usage.latency = 12u;
             break;
-        case 0x79:
+        case 0x7C:
             usage.latency = 29u;
             break;
-        case 0x7D:
+        case 0x7E:
             usage.latency = 44u;
             break;
         default:

@@ -53,6 +53,16 @@ namespace ps2x::iop
         std::array<uint32_t, 5> arguments{};
     };
 
+    // Controller state on the wire: buttons active-low (libpad bit order), sticks centred at 0x80.
+    struct PadInput
+    {
+        uint16_t buttons = 0xFFFFu;
+        uint8_t rightX = 0x80u;
+        uint8_t rightY = 0x80u;
+        uint8_t leftX = 0x80u;
+        uint8_t leftY = 0x80u;
+    };
+
     class IopHost
     {
     public:
@@ -130,6 +140,13 @@ namespace ps2x::iop
             return false;
         }
 
+        // Reports the controller plugged into SIO2 port `port` (0 or 1); false = no controller.
+        virtual bool readPad(int port, PadInput &input)
+        {
+            (void)port;
+            (void)input;
+            return false;
+        }
         virtual void log(LogLevel level, std::string_view message) = 0;
     };
 }

@@ -1053,13 +1053,13 @@ void register_ps2_vu1_tests()
                      "the flag-driven branch should arrive at its target");
         });
 
-        tc.Run("JR shares the one-instruction VI branch visibility rule", [](TestCase &t)
+        tc.Run("JR waits for a pending VI write instead of using the previous value", [](TestCase &t)
         {
             Vu1Fixture fx;
             t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
 
             writeVuInstructionPair(
-                fx.code, 0u, makeVuIaddiu(1u, 0u, 2),
+                fx.code, 0u, makeVuIaddiu(1u, 0u, 4),
                 kVuUpperNop);
             writeVuInstructionPair(
                 fx.code, 8u, makeVuJr(1u),
@@ -1075,19 +1075,19 @@ void register_ps2_vu1_tests()
                 kVuUpperNop);
 
             VU1Interpreter vu1;
-            vu1.state().vi[1] = 4;
+            vu1.state().vi[1] = 2;
             vu1.execute(fx.code, PS2_VU1_CODE_SIZE,
                         fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
-                        0u, 0u, 0u, 4u);
+                        0u, 0u, 0u, 8u);
 
-            t.Equals(vu1.state().vi[1], 2,
+            t.Equals(vu1.state().vi[1], 4,
                      "the pending IALU write should still commit normally");
             t.Equals(vu1.state().vi[2], 2,
                      "JR should execute exactly one delay-slot pair");
             t.Equals(vu1.state().vi[3], 0,
                      "JR should skip the sequential instruction after its delay slot");
             t.Equals(vu1.state().vi[4], 4,
-                     "JR immediately after a VI write should branch using the previous VI value");
+                     "JR immediately after a VI write should branch using the new VI value");
         });
 
         tc.Run("MPG upload invalidates cached VU1 decode before MSCAL", [](TestCase &t)

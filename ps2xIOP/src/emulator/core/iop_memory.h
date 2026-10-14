@@ -2,11 +2,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "iop_sio2.h"
 
 namespace ps2x::iop::detail
 {
@@ -22,8 +25,16 @@ namespace ps2x::iop::detail
         static constexpr uint32_t Spu2End = 0x1FA00000u;
         static constexpr uint32_t SifBase = 0x1D000000u;
         static constexpr uint32_t SifEnd = 0x1D001000u;
+        // Modules and AllocSysMemory share one arena, like the real sysmem.
+        static constexpr uint32_t ArenaBase = 0x00010000u;
         static constexpr uint32_t HeapBase = 0x00120000u;
         static constexpr uint32_t HeapLimit = 0x001F0000u;
+
+        enum class Placement
+        {
+            Low,  // first fit from the bottom (ALLOC_FIRST, module images)
+            High, // first fit from the top (ALLOC_LAST)
+        };
 
         struct Allocation
         {
@@ -55,9 +66,11 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool isHardwareAddress(uint32_t address) const;
         [[nodiscard]] std::string readString(uint32_t address, size_t limit = 1024u) const;
 
-        [[nodiscard]] uint32_t allocate(uint32_t size, uint32_t alignment = 16u, std::optional<uint32_t> fixed = std::nullopt);
+        [[nodiscard]] uint32_t allocate(uint32_t size, uint32_t alignment = 16u, std::optional<uint32_t> fixed = std::nullopt,
+                                        Placement placement = Placement::Low);
         [[nodiscard]] bool freeAllocation(uint32_t address);
         [[nodiscard]] uint32_t maxFreeMemory() const;
+        [[nodiscard]] uint32_t totalFreeMemory() const;
         [[nodiscard]] std::optional<Allocation> allocationContaining(uint32_t address) const;
 
         [[nodiscard]] uint32_t interruptStatus() const noexcept { return m_interruptStatus; }
@@ -68,6 +81,7 @@ namespace ps2x::iop::detail
         void setInterruptControl(uint32_t value) noexcept { m_interruptControl = value & 1u; }
 
         [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
+        void setSio2PadReader(IopSio2::PadReader reader) { m_sio2.setPadReader(std::move(reader)); }
         [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
 
         [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
@@ -76,16 +90,18 @@ namespace ps2x::iop::detail
         [[nodiscard]] uint32_t readHardware32(uint32_t address) const;
         void writeHardware32(uint32_t address, uint32_t value);
         void markOwned(uint32_t address, size_t size);
+        // Free gaps of the arena in ascending address order.
+        [[nodiscard]] std::vector<Allocation> freeGaps() const;
 
         std::vector<uint8_t> m_ram;
         std::vector<uint8_t> m_owned;
         std::vector<uint8_t> m_scratch;
         std::unordered_map<uint32_t, uint32_t> m_hardware;
         std::vector<Allocation> m_allocations;
-        uint32_t m_heapCursor = HeapBase;
         uint32_t m_interruptStatus = 0;
         uint32_t m_interruptMask = 0;
         uint32_t m_interruptControl = 1;
-        std::optional<DmaStart> m_dmaStart;
+        std::deque<DmaStart> m_pendingInterrupts; // DMA completions and SIO2 transfers
+        mutable IopSio2 m_sio2;
     };
 }

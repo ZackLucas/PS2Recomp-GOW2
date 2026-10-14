@@ -12,6 +12,7 @@ namespace ps2x::iop::detail
         constexpr uint32_t kDmaStart = 1u << 24u;
         constexpr int kDmaSpu0Irq = 0x24;
         constexpr int kDmaSpu1Irq = 0x28;
+        constexpr uint64_t kSio2TransferCycles = 256u;
 
         uint32_t alignUp(uint32_t value, uint32_t alignment)
         {
@@ -32,11 +33,11 @@ namespace ps2x::iop::detail
         std::fill(m_scratch.begin(), m_scratch.end(), uint8_t{0});
         m_hardware.clear();
         m_allocations.clear();
-        m_heapCursor = HeapBase;
         m_interruptStatus = 0;
         m_interruptMask = 0;
         m_interruptControl = 1;
-        m_dmaStart.reset();
+        m_pendingInterrupts.clear();
+        m_sio2.reset();
     }
 
     uint32_t IopMemory::physicalAddress(uint32_t address) noexcept
@@ -213,6 +214,8 @@ namespace ps2x::iop::detail
 
     uint32_t IopMemory::readHardware32(uint32_t address) const
     {
+        if (IopSio2::contains(address))
+            return m_sio2.read32(address);
         const auto value = m_hardware.find(address);
         if (value != m_hardware.end())
             return value->second;
@@ -231,6 +234,12 @@ namespace ps2x::iop::detail
 
     void IopMemory::writeHardware32(uint32_t address, uint32_t value)
     {
+        if (IopSio2::contains(address))
+        {
+            if (m_sio2.write32(address, value))
+                m_pendingInterrupts.push_back(DmaStart{IopSio2::InterruptLine, kSio2TransferCycles});
+            return;
+        }
         switch (address)
         {
         case 0x1F801070u:
@@ -269,27 +278,51 @@ namespace ps2x::iop::detail
         const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
         const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
         const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
-        m_dmaStart = DmaStart{
+        m_pendingInterrupts.push_back(DmaStart{
             secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
             std::max<uint64_t>(transferWords * 2u, 64u),
-        };
+        });
     }
 
     std::optional<IopMemory::DmaStart> IopMemory::takeDmaStart() noexcept
     {
-        std::optional<DmaStart> result = m_dmaStart;
-        m_dmaStart.reset();
+        if (m_pendingInterrupts.empty())
+            return std::nullopt;
+        const DmaStart result = m_pendingInterrupts.front();
+        m_pendingInterrupts.pop_front();
         return result;
     }
 
-    uint32_t IopMemory::allocate(uint32_t size, uint32_t alignment, std::optional<uint32_t> fixed)
+    std::vector<IopMemory::Allocation> IopMemory::freeGaps() const
+    {
+        std::vector<Allocation> used = m_allocations;
+        std::sort(used.begin(), used.end(),
+                  [](const Allocation &a, const Allocation &b)
+                  { return a.address < b.address; });
+        std::vector<Allocation> gaps;
+        uint32_t cursor = ArenaBase;
+        for (const Allocation &block : used)
+        {
+            const uint32_t blockEnd = block.address + block.size;
+            if (blockEnd <= cursor || block.address >= HeapLimit)
+                continue;
+            if (block.address > cursor)
+                gaps.push_back({cursor, block.address - cursor});
+            cursor = std::max(cursor, blockEnd);
+        }
+        if (cursor < HeapLimit)
+            gaps.push_back({cursor, HeapLimit - cursor});
+        return gaps;
+    }
+
+    uint32_t IopMemory::allocate(uint32_t size, uint32_t alignment, std::optional<uint32_t> fixed, Placement placement)
     {
         size = alignUp(std::max(size, 1u), 16u);
         alignment = std::max<uint32_t>(alignment, 4u);
         if (fixed)
         {
             const uint32_t address = *fixed;
-            if (address < HeapBase || address + size > HeapLimit)
+            if (address < ArenaBase || address + size > HeapLimit)
                 return 0u;
             for (const auto &block : m_allocations)
                 if (address < block.address + block.size && block.address < address + size)
@@ -299,27 +332,38 @@ namespace ps2x::iop::detail
             return address;
         }
 
-        uint32_t candidate = alignUp(m_heapCursor, alignment);
-        for (;;)
+        const std::vector<Allocation> gaps = freeGaps();
+        uint32_t candidate = 0u;
+        if (placement == Placement::Low)
         {
-            bool overlap = false;
-            for (const auto &block : m_allocations)
+            for (const Allocation &gap : gaps)
             {
-                if (candidate < block.address + block.size && block.address < candidate + size)
+                const uint32_t aligned = alignUp(gap.address, alignment);
+                if (aligned >= gap.address && aligned - gap.address <= gap.size && size <= gap.size - (aligned - gap.address))
                 {
-                    candidate = alignUp(block.address + block.size, alignment);
-                    overlap = true;
+                    candidate = aligned;
                     break;
                 }
             }
-            if (!overlap)
-                break;
         }
-        if (candidate > HeapLimit || size > HeapLimit - candidate)
+        else
+        {
+            for (auto gap = gaps.rbegin(); gap != gaps.rend(); ++gap)
+            {
+                if (size > gap->size)
+                    continue;
+                const uint32_t aligned = (gap->address + gap->size - size) & ~(alignment - 1u);
+                if (aligned >= gap->address)
+                {
+                    candidate = aligned;
+                    break;
+                }
+            }
+        }
+        if (candidate == 0u)
             return 0u;
         m_allocations.push_back({candidate, size});
         markOwned(candidate, size);
-        m_heapCursor = std::max(m_heapCursor, candidate + size);
         return candidate;
     }
 
@@ -339,7 +383,18 @@ namespace ps2x::iop::detail
 
     uint32_t IopMemory::maxFreeMemory() const
     {
-        return m_heapCursor < HeapLimit ? HeapLimit - m_heapCursor : 0u;
+        uint32_t largest = 0u;
+        for (const Allocation &gap : freeGaps())
+            largest = std::max(largest, gap.size);
+        return largest;
+    }
+
+    uint32_t IopMemory::totalFreeMemory() const
+    {
+        uint32_t total = 0u;
+        for (const Allocation &gap : freeGaps())
+            total += gap.size;
+        return total;
     }
 
     std::optional<IopMemory::Allocation> IopMemory::allocationContaining(uint32_t address) const

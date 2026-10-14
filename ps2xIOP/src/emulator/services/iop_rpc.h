@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 
 namespace ps2x::iop
@@ -52,10 +53,21 @@ namespace ps2x::iop::detail
         void onSifTransfer(const SifTransfer &transfer);
         void removeServersInRange(uint32_t base, uint32_t size);
 
+        struct DmaCompletionCallback
+        {
+            uint32_t function = 0u;
+            uint32_t argument = 0u;
+            uint32_t gp = 0u;
+        };
+        // Completion handler queued by sceSifSetDmaIntr, run by the emulator in interrupt context.
+        [[nodiscard]] std::optional<DmaCompletionCallback> takeDmaCompletionCallback() noexcept;
+
         [[nodiscard]] bool hasServer(uint32_t sid) const noexcept;
         [[nodiscard]] size_t serverCount() const noexcept { return m_servers.size(); }
 
     private:
+        [[nodiscard]] uint32_t setDma(const IopCpuState &cpu);
+
         struct RpcServer
         {
             uint32_t sid = 0;
@@ -73,6 +85,7 @@ namespace ps2x::iop::detail
         IopKernel &m_kernel;
         std::unordered_map<uint32_t, RpcServer> m_servers;
         uint32_t m_nextDmaId = 1u;
+        std::optional<DmaCompletionCallback> m_dmaCompletion;
         bool m_sifInitialized = false;
     };
 }

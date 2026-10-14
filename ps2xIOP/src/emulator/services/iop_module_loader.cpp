@@ -320,10 +320,10 @@ namespace ps2x::iop::detail
         return ok;
     }
 
-    bool IopModuleLoader::readElfFromGuest(IopHost &host, uint32_t guestAddress, std::vector<uint8_t> &bytes)
+    bool IopModuleLoader::readElf(const MemoryReader &read, uint32_t guestAddress, std::vector<uint8_t> &bytes)
     {
         Elf32Ehdr header{};
-        if (!host.readGuest(guestAddress, &header, sizeof(header)) || !validElfHeader(header))
+        if (!read(guestAddress, &header, sizeof(header)) || !validElfHeader(header))
             return false;
 
         uint64_t required = sizeof(header);
@@ -334,7 +334,7 @@ namespace ps2x::iop::detail
             return false; // Should we log an error here? TODO check later
 
         bytes.resize(static_cast<size_t>(required));
-        if (!host.readGuest(guestAddress, bytes.data(), bytes.size()))
+        if (!read(guestAddress, bytes.data(), bytes.size()))
             return false;
 
         if (header.shnum != 0u && header.shentsize >= sizeof(Elf32Shdr))
@@ -364,7 +364,14 @@ namespace ps2x::iop::detail
             return false;
 
         bytes.resize(static_cast<size_t>(required));
-        return host.readGuest(guestAddress, bytes.data(), bytes.size());
+        return read(guestAddress, bytes.data(), bytes.size());
+    }
+
+    bool IopModuleLoader::readElfFromGuest(IopHost &host, uint32_t guestAddress, std::vector<uint8_t> &bytes)
+    {
+        return readElf([&host](uint32_t address, void *destination, size_t size)
+                       { return host.readGuest(address, destination, size); },
+                       guestAddress, bytes);
     }
 
     IopImageLoadResult IopModuleLoader::load(std::span<const uint8_t> image, IopMemory &memory, uint32_t moduleCursor)
@@ -431,8 +438,9 @@ namespace ps2x::iop::detail
         int64_t delta = 0;
         if (relocate)
         {
-            base = alignUp(moduleCursor, 0x100u);
-            if (base + span >= IopMemory::HeapBase)
+            // Module images come from the same arena as AllocSysMemory.
+            base = memory.allocate(span, 0x100u);
+            if (base == 0u)
             {
                 result.error = IopImageLoadError::ArenaExhausted;
                 return result;
@@ -443,6 +451,7 @@ namespace ps2x::iop::detail
         else
         {
             base = minVaddr;
+            (void)memory.allocate(span, 0x100u, base); // keep sysmem from handing the range out
         }
 
         if (hasLoad)

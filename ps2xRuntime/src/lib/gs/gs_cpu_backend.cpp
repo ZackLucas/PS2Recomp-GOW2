@@ -1307,6 +1307,28 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
     if (std::fabs(denom) < 0.001f)
         return;
 
+    {
+        static const long bigTriLimit = []()
+        {
+            const char *env = std::getenv("PS2_TRACE_BIGTRI");
+            return env ? std::strtol(env, nullptr, 0) : 0L;
+        }();
+        static long bigTriLogged = 0;
+        if (bigTriLogged < bigTriLimit && std::fabs(denom) * 0.5f > 40000.0f)
+        {
+            ++bigTriLogged;
+            std::fprintf(stderr,
+                         "[bigtri] area=%.0f tme=%d abe=%d fst=%d iip=%d fge=%d alpha=%llx test=%llx fbp=%x fpsm=%x fbmsk=%x zbp=%x zpsm=%x zmsk=%d tex psm=%x tbp=%x tbw=%u tw=%u th=%u tcc=%u tfx=%u cpsm=%x\n",
+                         std::fabs(denom) * 0.5f, state.prim.tme, state.prim.abe, state.prim.fst, state.prim.iip, state.prim.fge,
+                         (unsigned long long)ctx.alpha, (unsigned long long)ctx.test, ctx.frame.fbp, ctx.frame.psm, ctx.frame.fbmsk,
+                         ctx.zbuf.zbp, ctx.zbuf.psm, (int)ctx.zbuf.zmask, ctx.tex0.psm, ctx.tex0.tbp0, ctx.tex0.tbw, ctx.tex0.tw, ctx.tex0.th,
+                         ctx.tex0.tcc, ctx.tex0.tfx, ctx.tex0.cpsm);
+            for (const GSVertex *v : {&v0, &v1, &v2})
+                std::fprintf(stderr, "    v x=%.1f y=%.1f z=%.0f rgba=%u,%u,%u,%u stq=%g,%g,%g uv=%u,%u\n",
+                             v->x - ofx, v->y - ofy, v->z, v->r, v->g, v->b, v->a, v->s, v->t, v->q, v->u, v->v);
+        }
+    }
+
     const float winding = (denom < 0.0f) ? -1.0f : 1.0f;
     const float invAbsDenom = 1.0f / std::fabs(denom);
     constexpr float kEdgeEpsilon = 1.0e-4f;

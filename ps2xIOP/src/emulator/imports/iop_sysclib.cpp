@@ -2,6 +2,7 @@
 
 #include "../core/iop_cpu.h"
 #include "../core/iop_memory.h"
+#include "iop_format.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -14,6 +15,82 @@ namespace ps2x::iop::detail
     IopSysclib::IopSysclib(IopMemory &memory) noexcept
         : m_memory(memory)
     {
+    }
+
+    namespace
+    {
+        // newlib/ps2sdk ctype bits returned by look_ctype_table.
+        constexpr uint8_t kCtypeUpper = 0x01u;
+        constexpr uint8_t kCtypeLower = 0x02u;
+        constexpr uint8_t kCtypeDigit = 0x04u;
+        constexpr uint8_t kCtypeSpace = 0x08u;
+        constexpr uint8_t kCtypePunct = 0x10u;
+        constexpr uint8_t kCtypeControl = 0x20u;
+        constexpr uint8_t kCtypeHex = 0x40u;
+        constexpr uint8_t kCtypeBlank = 0x80u;
+
+        uint8_t ctypeFlags(uint8_t c)
+        {
+            if (c >= 0x80u)
+                return 0u;
+            uint8_t flags = 0u;
+            if (std::isupper(c))
+                flags |= kCtypeUpper;
+            if (std::islower(c))
+                flags |= kCtypeLower;
+            if (std::isdigit(c))
+                flags |= kCtypeDigit;
+            if (std::isspace(c))
+                flags |= kCtypeSpace;
+            if (std::ispunct(c))
+                flags |= kCtypePunct;
+            if (std::iscntrl(c))
+                flags |= kCtypeControl;
+            if (std::isxdigit(c) && !std::isdigit(c))
+                flags |= kCtypeHex;
+            if (c == ' ')
+                flags |= kCtypeBlank;
+            return flags;
+        }
+
+        void writeString(IopMemory &memory, uint32_t destination, const std::string &text)
+        {
+            for (size_t i = 0; i < text.size(); ++i)
+                memory.write8(destination + static_cast<uint32_t>(i), static_cast<uint8_t>(text[i]));
+            memory.write8(destination + static_cast<uint32_t>(text.size()), 0u);
+        }
+    }
+
+    uint32_t IopSysclib::tokenize(uint32_t start, uint32_t delimiters, uint32_t &savePtr)
+    {
+        const std::string delims = m_memory.readString(delimiters, 256u);
+        const auto isDelimiter = [&](uint8_t ch)
+        { return ch != 0u && delims.find(static_cast<char>(ch)) != std::string::npos; };
+
+        uint32_t cursor = start != 0u ? start : savePtr;
+        if (cursor == 0u)
+            return 0u;
+        while (isDelimiter(m_memory.read8(cursor)))
+            ++cursor;
+        if (m_memory.read8(cursor) == 0u)
+        {
+            savePtr = 0u;
+            return 0u;
+        }
+
+        const uint32_t token = cursor;
+        while (m_memory.read8(cursor) != 0u && !isDelimiter(m_memory.read8(cursor)))
+            ++cursor;
+        if (m_memory.read8(cursor) != 0u)
+        {
+            m_memory.write8(cursor, 0u);
+            savePtr = cursor + 1u;
+        }
+        else
+        {
+            savePtr = 0u;
+        }
+        return token;
     }
 
     bool IopSysclib::dispatchImport(uint16_t ordinal, IopCpuState &cpu)
@@ -73,8 +150,10 @@ namespace ps2x::iop::detail
         case 7:
             setV0(static_cast<uint32_t>(std::tolower(static_cast<unsigned char>(a0))));
             return true;
-        case 8:
-        case 9: // ctype table is optional for most IRXs.
+        case 8: // look_ctype_table
+            setV0(ctypeFlags(static_cast<uint8_t>(a0)));
+            return true;
+        case 9: // get_ctype_table: no guest-resident table yet.
             setV0(0);
             return true;
         case 10: // memchr
@@ -124,15 +203,15 @@ namespace ps2x::iop::detail
         case 18: // prnt
             setV0(0);
             return true;
-        case 19: // sprintf: preserve useful literal formats even before full vararg formatting.
-        case 42: // vsprintf fallback: copy format literal.
+        case 19: // sprintf(buffer, format, ...)
+        case 42: // vsprintf(buffer, format, va_list)
         {
             const std::string format = m_memory.readString(a1, 4096u);
-            for (size_t i = 0; i <= format.size(); ++i)
-            {
-                m_memory.write8(a0 + static_cast<uint32_t>(i), i < format.size() ? static_cast<uint8_t>(format[i]) : 0u);
-            }
-            setV0(static_cast<uint32_t>(format.size()));
+            const std::string text = formatIopString(m_memory, format,
+                                                     ordinal == 19 ? makeCallVarargs(cpu, m_memory, 2u)
+                                                                   : makeVaListVarargs(m_memory, a2));
+            writeString(m_memory, a0, text);
+            setV0(static_cast<uint32_t>(text.size()));
             return true;
         }
         case 20:
@@ -294,8 +373,8 @@ namespace ps2x::iop::detail
                       : a0 + static_cast<uint32_t>(position));
             return true;
         }
-        case 35: // strtok state is intentionally not shared across modules yet.
-            setV0(0);
+        case 35: // strtok(str, delimiters); the state is shared across modules, like the real sysclib.
+            setV0(tokenize(a0, a1, m_strtokNext));
             return true;
         case 36:
         case 38: // strtol / strtoul
@@ -326,9 +405,15 @@ namespace ps2x::iop::detail
                 m_memory.write32(a0 + i * 4u, a1);
             setV0(a0);
             return true;
-        case 43:
-            setV0(0);
+        case 43: // strtok_r(str, delimiters, savePtr)
+        {
+            uint32_t savePtr = a2 != 0u ? m_memory.read32(a2) : 0u;
+            const uint32_t token = tokenize(a0, a1, savePtr);
+            if (a2 != 0u)
+                m_memory.write32(a2, savePtr);
+            setV0(token);
             return true;
+        }
         default:
             return false;
         }

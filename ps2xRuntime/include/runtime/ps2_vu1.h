@@ -240,6 +240,7 @@ private:
     bool m_pendingHaltD = false;
     bool m_pendingHaltT = false;
 
+    void reportXgkickFault(const char *reason);
     void run(uint8_t *vuCode, uint32_t codeSize,
              uint8_t *vuData, uint32_t dataSize,
              GS &gs, PS2Memory *memory, uint32_t maxCycles);

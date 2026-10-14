@@ -1,5 +1,7 @@
 // Based on Blackline Interactive implementation
 #include "runtime/ps2_memory.h"
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 enum VIFCmd : uint8_t
@@ -58,7 +60,7 @@ namespace
                 payloadBytes = static_cast<uint64_t>(nloop) * nreg * 8ull;
                 payloadBytes = (payloadBytes + 15ull) & ~15ull;
             }
-            else if (flg == kGifFmtImage)
+            else if (flg >= kGifFmtImage) // FLG=3 behaves like IMAGE
             {
                 payloadBytes = static_cast<uint64_t>(nloop) * 16ull;
                 const uint64_t availableBytes = sizeBytes - offset;
@@ -340,6 +342,21 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         uint8_t num = (cmd >> 16) & 0xFF;
         const bool irq = (cmd & 0x80000000u) != 0u;
 
+        {
+            static const long traceLimit = []()
+            {
+                const char *env = std::getenv("PS2_TRACE_VIF1");
+                return env ? std::strtol(env, nullptr, 0) : 0L;
+            }();
+            static long traced = 0;
+            if (traced < traceLimit)
+            {
+                ++traced;
+                std::fprintf(stderr, "[vif1] cmd=%08x op=%02x num=%u imm=%04x tops=%03x itops=%03x base=%03x ofst=%03x dbf=%u\n",
+                             cmd, opcode, num, imm, vif1_regs.tops & 0x3FFu, vif1_regs.itops & 0x3FFu,
+                             vif1_regs.base & 0x3FFu, vif1_regs.ofst & 0x3FFu, (vif1_regs.stat >> 7) & 1u);
+            }
+        }
         // Track most-recent command for VIFn_CODE emulation.
         vif1_regs.code = cmd;
         vif1_regs.num = num;
@@ -644,12 +661,19 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                         }
                         else
                         {
-                            const uint32_t limit = (components > 4) ? 4u : static_cast<uint32_t>(components);
+                            // V3 reads the next stream element into W; V2 mirrors X/Y into Z/W.
+                            const uint32_t limit = (components == 3) ? 4u : static_cast<uint32_t>(components);
                             for (uint32_t c = 0; c < limit; ++c)
                             {
                                 uint32_t scalar = 0;
-                                std::memcpy(&scalar, srcVec + c * 4u, sizeof(scalar));
+                                if (srcVec + c * 4u + 4u <= data + sizeBytes)
+                                    std::memcpy(&scalar, srcVec + c * 4u, sizeof(scalar));
                                 decompressed[c] = scalar;
+                            }
+                            if (components == 2)
+                            {
+                                decompressed[2] = decompressed[0];
+                                decompressed[3] = decompressed[1];
                             }
                         }
                     }
@@ -667,12 +691,18 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                         }
                         else
                         {
-                            const uint32_t limit = (components > 4) ? 4u : static_cast<uint32_t>(components);
+                            const uint32_t limit = (components == 3) ? 4u : static_cast<uint32_t>(components);
                             for (uint32_t c = 0; c < limit; ++c)
                             {
                                 uint16_t raw = 0;
-                                std::memcpy(&raw, srcVec + c * 2u, sizeof(raw));
+                                if (srcVec + c * 2u + 2u <= data + sizeBytes)
+                                    std::memcpy(&raw, srcVec + c * 2u, sizeof(raw));
                                 decompressed[c] = extend16(raw);
+                            }
+                            if (components == 2)
+                            {
+                                decompressed[2] = decompressed[0];
+                                decompressed[3] = decompressed[1];
                             }
                         }
                     }
@@ -688,10 +718,13 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                         }
                         else
                         {
-                            const uint32_t limit = (components > 4) ? 4u : static_cast<uint32_t>(components);
+                            const uint32_t limit = (components == 3) ? 4u : static_cast<uint32_t>(components);
                             for (uint32_t c = 0; c < limit; ++c)
+                                decompressed[c] = (srcVec + c < data + sizeBytes) ? extend8(srcVec[c]) : 0u;
+                            if (components == 2)
                             {
-                                decompressed[c] = extend8(srcVec[c]);
+                                decompressed[2] = decompressed[0];
+                                decompressed[3] = decompressed[1];
                             }
                         }
                     }
@@ -700,10 +733,10 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                         // V4-5: packed color-like format in a single 16-bit value.
                         uint16_t packed = 0;
                         std::memcpy(&packed, srcVec, sizeof(packed));
-                        decompressed[0] = packed & 0x1Fu;
-                        decompressed[1] = (packed >> 5) & 0x1Fu;
-                        decompressed[2] = (packed >> 10) & 0x1Fu;
-                        decompressed[3] = (packed >> 15) & 0x01u;
+                        decompressed[0] = (packed & 0x001Fu) << 3;
+                        decompressed[1] = (packed & 0x03E0u) >> 2;
+                        decompressed[2] = (packed & 0x7C00u) >> 7;
+                        decompressed[3] = (packed & 0x8000u) >> 8;
                     }
                     else
                     {

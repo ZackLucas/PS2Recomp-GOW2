@@ -125,6 +125,7 @@
     X(sceSifLoadElfPart)       \
     X(sceSifLoadModule)        \
     X(sceSifLoadModuleBuffer)  \
+    X(_sceSifLoadModuleBuffer) \
                                \
     X(SetupThread)             \
     X(EndOfHeap)               \
@@ -292,6 +293,7 @@
     X(sceCdDelayThread)                       \
     X(sceCdDiskReady)                         \
     X(sceCdGetDiskType)                       \
+    X(sceCdReadDvdDualInfo)                   \
     X(sceCdGetError)                          \
     X(sceCdGetReadPos)                        \
     X(sceCdGetToc)                            \

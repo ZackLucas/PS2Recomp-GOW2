@@ -25,11 +25,11 @@ namespace ps2x::iop::detail
 
         switch (ordinal)
         {
-        case 4: // AllocSysMemory
+        case 4: // AllocSysMemory(type, size, addr): 0 = FIRST, 1 = LAST, 2 = ADDR
         {
-            const uint32_t address = a0 == 2u
-                                         ? m_memory.allocate(a1, 16u, a2)
-                                         : m_memory.allocate(a1, 16u);
+            const uint32_t address = a0 == 2u   ? m_memory.allocate(a1, 16u, a2)
+                                     : a0 == 1u ? m_memory.allocate(a1, 16u, std::nullopt, IopMemory::Placement::High)
+                                                : m_memory.allocate(a1, 16u);
             setV0(address);
             return true;
         }
@@ -40,8 +40,10 @@ namespace ps2x::iop::detail
             setV0(IopMemory::RamSize);
             return true;
         case 7: // QueryMaxFreeMemSize
-        case 8: // QueryTotalFreeMemSize
             setV0(m_memory.maxFreeMemory());
+            return true;
+        case 8: // QueryTotalFreeMemSize
+            setV0(m_memory.totalFreeMemory());
             return true;
         case 9: // QueryBlockTopAddress
             if (const auto block = m_memory.allocationContaining(a0))

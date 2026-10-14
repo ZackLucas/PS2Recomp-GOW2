@@ -285,7 +285,7 @@ namespace ps2_syscalls
         SifLoadModule(rdram, ctx, runtime);
     }
 
-    void sceSifLoadModuleBuffer(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    static void loadModuleBufferImpl(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, int32_t *startResultOut)
     {
         const uint32_t bufferAddr = getRegU32(ctx, 4);   // $a0
         const uint32_t argumentSize = getRegU32(ctx, 5); // $a1
@@ -320,7 +320,34 @@ namespace ps2_syscalls
 
         trackSifModuleLoadExternal(moduleTag, loaded.moduleId);
         logSifModuleAction("load-buffer-emulated", loaded.moduleId, moduleTag, 1u);
+        if (startResultOut)
+        {
+            *startResultOut = loaded.startResult;
+        }
         setReturnS32(ctx, loaded.moduleId);
+    }
+
+    // int sceSifLoadModuleBuffer(const void *iopAddr, int argLen, const char *args)
+    void sceSifLoadModuleBuffer(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        loadModuleBufferImpl(rdram, ctx, runtime, nullptr);
+    }
+
+    // int _sceSifLoadModuleBuffer(const void *iopAddr, int argLen, const char *args, int *modres)
+    // Internal libkernel entry behind the load-and-start wrappers; it also reports the
+    // module's start() return value, which games may check (e.g. disc checks).
+    void _sceSifLoadModuleBuffer(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t modresAddr = getRegU32(ctx, 7); // $a3
+        int32_t startResult = -1;
+        loadModuleBufferImpl(rdram, ctx, runtime, &startResult);
+        if (modresAddr != 0u && static_cast<int32_t>(getRegU32(ctx, 2)) > 0)
+        {
+            if (uint8_t *modres = getMemPtr(rdram, modresAddr))
+            {
+                std::memcpy(modres, &startResult, sizeof(startResult));
+            }
+        }
     }
 
     void TODO(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t encodedSyscallId)
@@ -531,6 +558,46 @@ namespace ps2_syscalls
         }
 
         scheduler.setupCurrentThread(initialStack, stackSize, getRegU32(ctx, 28));
+
+        // The BIOS hands the boot arguments to crt0 through this buffer
+        // (struct { int argc; char *argv[16]; char payload[256]; }). Games use
+        // argv[0] to tell a disc boot ("cdrom0:\\SLUS_XXX.XX;1") from a host boot,
+        // so publish the path the PS2 would have booted from.
+        const uint32_t argsAddr = getRegU32(ctx, 7);
+        if (argsAddr != 0u)
+        {
+            constexpr uint32_t kArgvOffset = 4u;
+            constexpr uint32_t kPayloadOffset = kArgvOffset + 16u * 4u;
+            constexpr uint32_t kPayloadSize = 256u;
+            uint8_t *args = getMemPtr(rdram, argsAddr);
+            uint8_t *argsEnd = getMemPtr(rdram, argsAddr + kPayloadOffset + kPayloadSize - 1u);
+            uint32_t existingArgc = 0u;
+            if (args && argsEnd)
+            {
+                std::memcpy(&existingArgc, args, sizeof(existingArgc));
+            }
+
+            const std::string elfName = PS2Runtime::getIoPaths().elfPath.filename().string();
+            if (args && argsEnd && existingArgc == 0u && !elfName.empty())
+            {
+                std::string bootPath = "cdrom0:\\";
+                for (char c : elfName)
+                {
+                    bootPath.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+                }
+                bootPath += ";1";
+                if (bootPath.size() < kPayloadSize)
+                {
+                    std::memset(args, 0, kPayloadOffset + kPayloadSize);
+                    const uint32_t argc = 1u;
+                    const uint32_t argv0 = argsAddr + kPayloadOffset;
+                    std::memcpy(args, &argc, sizeof(argc));
+                    std::memcpy(args + kArgvOffset, &argv0, sizeof(argv0));
+                    std::memcpy(args + kPayloadOffset, bootPath.c_str(), bootPath.size() + 1u);
+                }
+            }
+        }
+
         setReturnU32(ctx, sp);
     }
 
