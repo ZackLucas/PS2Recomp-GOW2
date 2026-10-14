@@ -1,0 +1,19 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "God of War II",
+  "system": "PS2",
+  "type": "recomp",
+  "original": { "region": "USA", "serial": "SCUS-97481" },
+  "project": "PS2Recomp-GOW2",
+  "status": "in-progress",
+  "targets": ["Linux"],
+  "toolchain": "PS2Recomp",
+  "approach": "Static recompilation of the EE ELF with PS2Recomp; IOP modules run in ps2xIOP, VU1/GS interpreted",
+  "maintainers": [{ "name": "ZackLucas", "link": "https://github.com/ZackLucas" }],
+  "help": [
+    "VU1 and GS performance (menu runs at ~3% speed)",
+    "Memory card authentication (SecrAuthCard)",
+    "Sound (989snd / SPU2)"
+  ],
+  "notes": "Boots to a correctly rendered main menu with working controller input; far too slow to play. See games/gow2/PROGRESS.md on the gow2 branch."
+}
