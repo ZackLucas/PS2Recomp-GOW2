@@ -580,6 +580,9 @@ bool PS2IopHostAdapter::readPad(int port, ps2x::iop::PadInput &input)
         return false;
     }
     input.buttons = static_cast<uint16_t>(data[2] | (static_cast<uint16_t>(data[3]) << 8));
+    // Buttons are active-low; PS2_PAD_SCRIPT presses are timed in guest VSyncs.
+    input.buttons &= static_cast<uint16_t>(
+        ~scriptedPadButtons(m_runtime.memory().gs().vsyncTick.load(std::memory_order_acquire)));
     input.rightX = data[4];
     input.rightY = data[5];
     input.leftX = data[6];

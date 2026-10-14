@@ -1,6 +1,12 @@
 #include "runtime/ps2_pad.h"
 #include "ps2_host_backend.h"
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <sstream>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -23,6 +29,66 @@ namespace
     constexpr uint16_t PAD_L1 = 0x0400u;
     constexpr uint16_t PAD_R2 = 0x0200u;
     constexpr uint16_t PAD_L2 = 0x0100u;
+
+    struct ScriptedPress
+    {
+        uint64_t start = 0;
+        uint64_t end = 0;
+        uint16_t mask = 0;
+    };
+
+    uint16_t buttonMask(const std::string &name)
+    {
+        static const std::pair<const char *, uint16_t> kButtons[] = {
+            {"UP", PAD_UP}, {"DOWN", PAD_DOWN}, {"LEFT", PAD_LEFT}, {"RIGHT", PAD_RIGHT},
+            {"CROSS", PAD_CROSS}, {"CIRCLE", PAD_CIRCLE}, {"SQUARE", PAD_SQUARE},
+            {"TRIANGLE", PAD_TRIANGLE}, {"START", PAD_START}, {"SELECT", PAD_SELECT},
+            {"L1", PAD_L1}, {"R1", PAD_R1}, {"L2", PAD_L2}, {"R2", PAD_R2},
+            {"L3", PAD_L3}, {"R3", PAD_R3}};
+        for (const auto &[label, mask] : kButtons)
+        {
+            if (name == label)
+                return mask;
+        }
+        std::fprintf(stderr, "[pad script] unknown button '%s'\n", name.c_str());
+        return 0u;
+    }
+
+    std::vector<ScriptedPress> parsePadScript(const char *text)
+    {
+        std::vector<ScriptedPress> presses;
+        std::stringstream entries(text ? text : "");
+        std::string entry;
+        while (std::getline(entries, entry, ','))
+        {
+            const size_t first = entry.find(':');
+            const size_t second = entry.find(':', first == std::string::npos ? first : first + 1);
+            if (first == std::string::npos)
+                continue;
+            ScriptedPress press;
+            press.start = std::strtoull(entry.c_str(), nullptr, 10);
+            const uint64_t length = second == std::string::npos ? 6u : std::strtoull(entry.c_str() + second + 1, nullptr, 10);
+            press.end = press.start + std::max<uint64_t>(length, 1u);
+            std::stringstream buttons(entry.substr(first + 1, second == std::string::npos ? std::string::npos : second - first - 1));
+            std::string button;
+            while (std::getline(buttons, button, '+'))
+                press.mask |= buttonMask(button);
+            presses.push_back(press);
+        }
+        return presses;
+    }
+}
+
+uint16_t scriptedPadButtons(uint64_t vsyncTick)
+{
+    static const std::vector<ScriptedPress> script = parsePadScript(std::getenv("PS2_PAD_SCRIPT"));
+    uint16_t held = 0u;
+    for (const ScriptedPress &press : script)
+    {
+        if (vsyncTick >= press.start && vsyncTick < press.end)
+            held |= press.mask;
+    }
+    return held;
 }
 
 bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
