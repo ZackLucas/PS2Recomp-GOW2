@@ -82,6 +82,7 @@ void VU1Interpreter::resetScheduler()
     m_accLatestWrite = {};
     m_nextWriteSequence = 0;
     m_efuResourceReady = 0;
+    m_nextCommitCycle = std::numeric_limits<uint64_t>::max();
     m_workingClip = m_state.clip;
     m_viBranchBackupValue = 0;
     m_viBranchBackupReg = 0;
@@ -203,10 +204,22 @@ void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
         if ((dest & laneForComponent(component)) == 0u)
             continue;
 
-        long double exactResult = 0.0L;
-        if (calculateFmacExactResult(component, exactResult))
+        // Products of two floats are exact in double, and under the VU's round-toward-zero
+        // mode double classifies zero/underflow/sign exactly like long double. Only a sum
+        // that lands on FLT_MAX may hide a tiny overflow, so recheck that case in long double.
+        double fastResult = 0.0;
+        if (calculateFmacExactResult(component, fastResult))
         {
-            laneFlags[component] = normalizeFmacExactResult(result[component], exactResult);
+            if (std::fabs(fastResult) == static_cast<double>(std::numeric_limits<float>::max()))
+            {
+                long double exactResult = 0.0L;
+                calculateFmacExactResult(component, exactResult);
+                laneFlags[component] = normalizeFmacExactResult(result[component], exactResult);
+            }
+            else
+            {
+                laneFlags[component] = normalizeFmacExactResult(result[component], fastResult);
+            }
             continue;
         }
 
@@ -216,8 +229,9 @@ void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
     }
 }
 
+template <typename Real>
 bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
-                                               long double &result) const
+                                               Real &result) const
 {
     const uint32_t upper = m_currentUpperInstruction;
     const uint8_t op = static_cast<uint8_t>(upper & 0x3Fu);
@@ -229,7 +243,7 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
 
     const auto operand = [this](float value)
     {
-        return static_cast<long double>(normalizeOperand(value));
+        return static_cast<Real>(normalizeOperand(value));
     };
     const auto vs = [&](uint32_t lane)
     {
@@ -244,8 +258,8 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
         return operand(m_state.acc[lane]);
     };
 
-    const long double q = operand(m_state.q);
-    const long double i = operand(m_state.i);
+    const Real q = operand(m_state.q);
+    const Real i = operand(m_state.i);
 
     if (op < 0x3Cu)
     {
@@ -313,7 +327,7 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
                 static constexpr uint8_t left[4] = {1u, 2u, 0u, 3u};
                 static constexpr uint8_t right[4] = {2u, 0u, 1u, 3u};
                 result = component == 3u
-                             ? 0.0L
+                             ? Real(0)
                              : acc(component) - vs(left[component]) * vt(right[component]);
                 break;
             }
@@ -388,7 +402,7 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
             static constexpr uint8_t left[4] = {1u, 2u, 0u, 3u};
             static constexpr uint8_t right[4] = {2u, 0u, 1u, 3u};
             result = component == 3u
-                         ? 0.0L
+                         ? Real(0)
                          : vs(left[component]) * vt(right[component]);
             break;
         }
@@ -399,17 +413,18 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
     return true;
 }
 
+template <typename Real>
 uint8_t VU1Interpreter::normalizeFmacExactResult(float &value,
-                                                  long double exactResult) const
+                                                  Real exactResult) const
 {
     const bool negative = std::signbit(exactResult);
-    const long double magnitude = std::fabs(exactResult);
-    const long double maximum = static_cast<long double>(std::numeric_limits<float>::max());
-    const long double minimum = static_cast<long double>(std::numeric_limits<float>::min());
+    const Real magnitude = std::fabs(exactResult);
+    const Real maximum = static_cast<Real>(std::numeric_limits<float>::max());
+    const Real minimum = static_cast<Real>(std::numeric_limits<float>::min());
     uint8_t flags = negative ? 0x2u : 0u;
 
     uint32_t bits = negative ? 0x80000000u : 0u;
-    if (magnitude == 0.0L)
+    if (magnitude == Real(0))
     {
         flags |= 0x1u;
         std::memcpy(&value, &bits, sizeof(value));
@@ -478,7 +493,7 @@ uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest) const
         }
 
         float product = left * right;
-        const long double exactProduct = static_cast<long double>(left) * static_cast<long double>(right);
+        const double exactProduct = static_cast<double>(left) * static_cast<double>(right); // exact
         const uint8_t productFlags = normalizeFmacExactResult(product, exactProduct);
         // Product-sum instructions report Z/S/U/O from the add/subtract result
         // as current flags, while every product condition accumulates into the
@@ -533,6 +548,7 @@ void VU1Interpreter::updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest,
     entry->valid = true;
     entry->issueCycle = m_cycle;
     entry->readyCycle = m_cycle + kFmacLatency;
+    m_nextCommitCycle = std::min(m_nextCommitCycle, entry->readyCycle);
     entry->mac = mac;
     entry->status = status;
     entry->extraSticky = extraSticky;
@@ -572,6 +588,7 @@ void VU1Interpreter::queueFsset(uint16_t immediate)
             entry.valid = true;
             entry.issueCycle = m_cycle;
             entry.readyCycle = m_cycle + kFmacLatency;
+            m_nextCommitCycle = std::min(m_nextCommitCycle, entry.readyCycle);
             entry.status = static_cast<uint32_t>(immediate) & 0xFC0u;
             entry.writesSticky = true;
             return;
@@ -591,6 +608,7 @@ void VU1Interpreter::queueClip(uint32_t clip)
             entry.valid = true;
             entry.issueCycle = m_cycle;
             entry.readyCycle = m_cycle + kFmacLatency;
+            m_nextCommitCycle = std::min(m_nextCommitCycle, entry.readyCycle);
             entry.clip = m_workingClip;
             entry.writesClip = true;
             return;
@@ -615,6 +633,7 @@ void VU1Interpreter::queueFcset(uint32_t clip)
             entry.valid = true;
             entry.issueCycle = m_cycle;
             entry.readyCycle = m_cycle + kFmacLatency;
+            m_nextCommitCycle = std::min(m_nextCommitCycle, entry.readyCycle);
             entry.clip = m_workingClip;
             entry.writesClip = true;
             return;
@@ -629,6 +648,7 @@ void VU1Interpreter::queueQ(float value, uint32_t latency, uint32_t statusDi)
     value = normalizeResult(value, ignoredFlags);
     m_fdiv.valid = true;
     m_fdiv.readyCycle = m_cycle + latency;
+    m_nextCommitCycle = std::min(m_nextCommitCycle, m_fdiv.readyCycle);
     m_fdiv.value = value;
     m_fdiv.statusDi = statusDi & 0x30u;
 }
@@ -643,6 +663,7 @@ void VU1Interpreter::queueP(float value, uint32_t latency)
         {
             entry.valid = true;
             entry.readyCycle = m_cycle + latency;
+            m_nextCommitCycle = std::min(m_nextCommitCycle, entry.readyCycle);
             entry.value = value;
             // EFU throughput is one cycle shorter than result visibility.
             m_efuResourceReady = m_cycle + (latency > 0u ? latency - 1u : 0u);
@@ -660,6 +681,7 @@ void VU1Interpreter::queueStore(uint32_t address, const uint32_t words[4], uint8
         {
             store.valid = true;
             store.readyCycle = m_cycle + 1u;
+            m_nextCommitCycle = std::min(m_nextCommitCycle, store.readyCycle);
             store.address = address;
             store.laneMask = laneMask;
             std::copy(words, words + 4, store.words.begin());
@@ -681,6 +703,7 @@ void VU1Interpreter::queueVfWrite(uint8_t reg, uint8_t laneMask,
             write = {};
             write.valid = true;
             write.readyCycle = m_cycle + latency;
+            m_nextCommitCycle = std::min(m_nextCommitCycle, write.readyCycle);
             write.sequence = ++m_nextWriteSequence;
             write.reg = reg;
             write.laneMask = laneMask;
@@ -707,6 +730,7 @@ void VU1Interpreter::queueViWrite(uint8_t reg, int32_t value, uint32_t latency)
             write = {};
             write.valid = true;
             write.readyCycle = m_cycle + latency;
+            m_nextCommitCycle = std::min(m_nextCommitCycle, write.readyCycle);
             write.sequence = ++m_nextWriteSequence;
             write.reg = reg;
             write.value = value;
@@ -728,6 +752,7 @@ void VU1Interpreter::queueAccWrite(uint8_t laneMask, const float value[4], uint3
             write = {};
             write.valid = true;
             write.readyCycle = m_cycle + latency;
+            m_nextCommitCycle = std::min(m_nextCommitCycle, write.readyCycle);
             write.sequence = ++m_nextWriteSequence;
             write.laneMask = laneMask;
             std::copy(value, value + 4, write.value.begin());
@@ -744,9 +769,26 @@ void VU1Interpreter::queueAccWrite(uint8_t laneMask, const float value[4], uint3
 
 void VU1Interpreter::commitReadyPipelines()
 {
+    // Nothing becomes visible before the earliest queued ready cycle.
+    if (m_cycle < m_nextCommitCycle)
+        return;
+
+    uint64_t nextCommit = std::numeric_limits<uint64_t>::max();
+    const auto pending = [this, &nextCommit](bool valid, uint64_t readyCycle)
+    {
+        if (!valid)
+            return false;
+        if (readyCycle > m_cycle)
+        {
+            nextCommit = std::min(nextCommit, readyCycle);
+            return false;
+        }
+        return true;
+    };
+
     for (FlagPipelineEntry &entry : m_flagPipeline)
     {
-        if (!entry.valid || entry.readyCycle > m_cycle)
+        if (!pending(entry.valid, entry.readyCycle))
             continue;
 
         if (entry.writesMac)
@@ -765,7 +807,7 @@ void VU1Interpreter::commitReadyPipelines()
         entry = {};
     }
 
-    if (m_fdiv.valid && m_fdiv.readyCycle <= m_cycle)
+    if (pending(m_fdiv.valid, m_fdiv.readyCycle))
     {
         m_state.q = m_fdiv.value;
         const uint32_t currentDi = m_fdiv.statusDi & 0x30u;
@@ -775,7 +817,7 @@ void VU1Interpreter::commitReadyPipelines()
 
     for (ScalarPipelineEntry &entry : m_efu)
     {
-        if (entry.valid && entry.readyCycle <= m_cycle)
+        if (pending(entry.valid, entry.readyCycle))
         {
             m_state.p = entry.value;
             entry = {};
@@ -784,7 +826,7 @@ void VU1Interpreter::commitReadyPipelines()
 
     for (PendingStore &store : m_storePipeline)
     {
-        if (!store.valid || store.readyCycle > m_cycle)
+        if (!pending(store.valid, store.readyCycle))
             continue;
         if (m_activeVuData && store.address + 16u <= m_activeVuDataSize)
         {
@@ -802,7 +844,7 @@ void VU1Interpreter::commitReadyPipelines()
 
     for (PendingVfWrite &write : m_vfWritePipeline)
     {
-        if (!write.valid || write.readyCycle > m_cycle)
+        if (!pending(write.valid, write.readyCycle))
             continue;
         for (uint32_t component = 0; component < 4u; ++component)
         {
@@ -817,7 +859,7 @@ void VU1Interpreter::commitReadyPipelines()
 
     for (PendingViWrite &write : m_viWritePipeline)
     {
-        if (!write.valid || write.readyCycle > m_cycle)
+        if (!pending(write.valid, write.readyCycle))
             continue;
         if (m_viLatestWrite[write.reg] == write.sequence)
             m_state.vi[write.reg] = static_cast<int16_t>(write.value);
@@ -826,7 +868,7 @@ void VU1Interpreter::commitReadyPipelines()
 
     for (PendingAccWrite &write : m_accWritePipeline)
     {
-        if (!write.valid || write.readyCycle > m_cycle)
+        if (!pending(write.valid, write.readyCycle))
             continue;
         for (uint32_t component = 0; component < 4u; ++component)
         {
@@ -838,6 +880,7 @@ void VU1Interpreter::commitReadyPipelines()
         }
         write = {};
     }
+    m_nextCommitCycle = nextCommit;
 }
 
 void VU1Interpreter::progressXgkick()

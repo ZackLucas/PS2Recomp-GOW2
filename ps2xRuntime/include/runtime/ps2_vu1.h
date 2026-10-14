@@ -227,6 +227,7 @@ private:
     uint64_t m_cycle = 0;
     uint64_t m_nextWriteSequence = 0;
     uint64_t m_efuResourceReady = 0;
+    uint64_t m_nextCommitCycle = ~0ull; // earliest readyCycle among queued pipeline entries
     uint32_t m_workingClip = 0;
     uint32_t m_currentUpperInstruction = 0;
     int32_t m_viBranchBackupValue = 0;
@@ -262,8 +263,10 @@ private:
     void applyFmacDest(float *dst, float *result, uint8_t dest);
     void applyFmacDestAcc(float *result, uint8_t dest);
     void normalizeFmacResult(float *result, uint8_t dest, uint8_t laneFlags[4]);
-    bool calculateFmacExactResult(uint32_t component, long double &result) const;
-    uint8_t normalizeFmacExactResult(float &value, long double exactResult) const;
+    template <typename Real>
+    bool calculateFmacExactResult(uint32_t component, Real &result) const;
+    template <typename Real>
+    uint8_t normalizeFmacExactResult(float &value, Real exactResult) const;
     uint32_t calculateFmacProductSticky(uint8_t dest) const;
     void updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest, uint32_t extraSticky);
     void queueFsset(uint16_t immediate);
