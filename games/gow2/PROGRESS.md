@@ -236,6 +236,30 @@ Próximos passos, em ordem (cada um com teste contra a implementação em C++):
    `gow2_gs_pixel_test`: 72 000 escritas aleatórias em sequência contra
    `GSCpuBackend::Submit(POINT)`, VRAM inteira comparada, 0 divergências; 5 de 6
    mutações detectadas (a 6a é equivalente: o fog nunca passa de 254).
-3b. Rasterização e fragment shader com ordenação por pixel (`ARB_fragment_shader_interlock`): função
+3b. (feito) rasterização, interpolação, amostragem de textura e ordenação por pixel:
+   `shaders/gs_draw.{vert,frag}`, `gs_draw_common.glsl`, `gs_texture.glsl`,
+   `gs_prim_pack.h`. Cada primitiva é uma instância que cobre a bounding box; o
+   fragment shader decide a cobertura com a mesma fórmula do CPU (centro do pixel,
+   bordas inclusivas), interpola cor/Z/UV/STQ, amostra (ponto e bilinear, 4 modos de
+   wrap, 13 formatos, CLUT, TEXA, TFX 0 a 3) e chama `gsWritePixel` dentro de uma
+   seção crítica ordenada por pixel (`ARB_fragment_shader_interlock`).
+   `gow2_gs_draw_test`: 80 000 primitivas aleatórias (triângulo, strip, fan, sprite,
+   ponto) com estado completo aleatório, em sementes novas, contra
+   `GSCpuBackend::Submit`, VRAM inteira comparada: **0 divergências**. 7 de 7
+   mutações detectadas (epsilon de borda, arredondamento do Z, UV de sprite, winding,
+   flat shading, wrap, offset do bilinear).
+   Lições registradas:
+   - **Divisão float em GLSL não é IEEE** (difere em 14,6% das amostras na NVIDIA).
+     Para bater bit a bit com o CPU, `gsDiv` calcula em `double` e arredonda uma vez
+     (exato: 53 >= 2*24+2). Com o Z em ~10^7, 1 ulp nos pesos já vira off-by-one.
+   - **`precise` e `optionNV(fastmath off)`** são necessários para evitar FMA.
+   - **A seção crítica por pixel só ordena fragmentos na mesma posição de tela.**
+     Quando FBP/FBW/PSM/ZBP/ZPSM mudam, endereços iguais da VRAM passam a vir de
+     posições diferentes; é preciso **dividir o draw e colocar uma barreira**. O
+     teste faz isso; o renderizador real também tem que fazer.
+   - O CPU não amostra textura em pontos; a GPU copia isso (divergência conhecida
+     do hardware, que amostraria).
+   Fora do escopo ainda: linhas (Bresenham do CPU), mipmap, dither, COLCLAMP (o CPU
+   também não aplica), regras de borda do GS real (aqui usamos as do modelo em CPU). (`ARB_fragment_shader_interlock`): função
    de textura, filtro, teste de alfa, teste de profundidade, blend a/b/c/d, máscaras.
 4. Replay do frame do menu e comparação com a VRAM do GS em CPU e com o PCSX2.
