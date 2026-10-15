@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
 
 namespace
 {
@@ -93,6 +94,15 @@ void restoreEnv(GS &gs, const uint8_t *s)
     gs.writeRegister(0x00, q(4));
 }
 
+void writePpmLocal(const std::string &path, const std::vector<uint8_t> &rgba, uint32_t w, uint32_t h)
+{
+    FILE *f = fopen(path.c_str(), "wb");
+    if (!f) return;
+    fprintf(f, "P6\n%u %u\n255\n", w, h);
+    for (size_t i = 0; i < size_t(w) * h; ++i) fwrite(&rgba[i * 4], 1, 3, f);
+    fclose(f);
+}
+
 // Backend that runs every command on the CPU rasterizer (the reference) and on the GPU executor.
 class TeeBackend final : public GSRasterBackend
 {
@@ -104,6 +114,7 @@ public:
         m_vramPtr = vram;
         if (const char *w = getenv("GT_WATCH_WORD")) m_watch = static_cast<size_t>(atol(w));
         m_flushEach = getenv("GT_CPU_FLUSH_EACH") != nullptr;
+        m_stats = getenv("GT_STATS") != nullptr;
         if (const char *m = getenv("GT_MODE")) { m_cpuOn = std::string(m) == "both"; m_gpuOn = std::string(m) != "nullonly"; }
         m_cpu.Initialize(vram, size);
         if (m_gpuOn) m_gpu.initialize(vram);
@@ -113,6 +124,59 @@ public:
     {
         uint32_t before = 0;
         if (m_watch != ~size_t(0)) std::memcpy(&before, m_vramPtr + m_watch * 4, 4);
+        if (m_stats)
+        {
+            const GSContext &c = b.state.context;
+            char k[200];
+            if (b.state.prim.tme)
+            {
+                const bool pal = c.tex0.psm == 0x13 || c.tex0.psm == 0x14 || c.tex0.psm == 0x1B || c.tex0.psm == 0x24 || c.tex0.psm == 0x2C;
+                snprintf(k, sizeof k, "tex psm=%02x%s tfx=%u tcc=%u filt=%d", c.tex0.psm,
+                         pal ? (std::string(" CLUT cpsm=") + (c.tex0.cpsm == 0 ? "00" : c.tex0.cpsm == 1 ? "01" : c.tex0.cpsm == 2 ? "02" : "0a") +
+                                " csm=" + std::to_string(c.tex0.csm) + " csa=" + std::to_string(c.tex0.csa)).c_str() : "",
+                         c.tex0.tfx, c.tex0.tcc, int(b.state.linearFilter));
+                m_hist[k]++;
+            }
+            snprintf(k, sizeof k, "blend abe=%d a=%llu b=%llu c=%llu d=%llu fix=%llu pabe=%d | test ate=%llu atst=%llu afail=%llu date=%llu ztst=%llu",
+                     int(b.state.prim.abe), (unsigned long long)(c.alpha & 3), (unsigned long long)((c.alpha >> 2) & 3),
+                     (unsigned long long)((c.alpha >> 4) & 3), (unsigned long long)((c.alpha >> 6) & 3),
+                     (unsigned long long)((c.alpha >> 32) & 0xFF), int(b.state.pabe), (unsigned long long)(c.test & 1),
+                     (unsigned long long)((c.test >> 1) & 7), (unsigned long long)((c.test >> 12) & 3),
+                     (unsigned long long)((c.test >> 14) & 1), (unsigned long long)((c.test >> 17) & 3));
+            m_hist[k]++;
+            snprintf(k, sizeof k, "target fbp=%u fbw=%u fpsm=%02x fbmsk=%08x | z zbp=%u zpsm=%02x zmask=%d | fge=%d fba=%llu",
+                     c.frame.fbp, c.frame.fbw, c.frame.psm, c.frame.fbmsk, c.zbuf.zbp, c.zbuf.psm, int(c.zbuf.zmask),
+                     int(b.state.prim.fge), (unsigned long long)(c.fba & 1));
+            m_hist[k]++;
+        }
+        if (const char *tr = getenv("GT_TEXRANGE"))   // "a-b": log textured prims whose TBP0 (blocks) lies in [a,b]
+        {
+            unsigned a = 0, bb = 0;
+            if (sscanf(tr, "%u-%u", &a, &bb) == 2 && b.state.prim.tme && b.state.context.tex0.tbp0 >= a && b.state.context.tex0.tbp0 <= bb)
+            {
+                const GSContext &c = b.state.context;
+                char k[240];
+                snprintf(k, sizeof k, "tbp=%u tbw=%u psm=%02x %ux%u tfx=%u tcc=%u cbp=%u cpsm=%02x csm=%u csa=%u cld=%u fst=%d filt=%d clamp=%llx -> fb p=%u psm=%02x",
+                         c.tex0.tbp0, c.tex0.tbw, c.tex0.psm, b.state.textureWidth, b.state.textureHeight, c.tex0.tfx, c.tex0.tcc,
+                         c.tex0.cbp, c.tex0.cpsm, c.tex0.csm, c.tex0.csa, c.tex0.cld, int(b.state.prim.fst), int(b.state.linearFilter),
+                         (unsigned long long)c.clamp, c.frame.fbp, c.frame.psm);
+                m_hist[k]++;
+                if (m_primIndex < 200000 && m_texFirst.find(k) == m_texFirst.end()) m_texFirst[k] = m_primIndex;
+            }
+        }
+        if (const char *lp = getenv("GT_LIST_PACKET"))   // list every primitive issued by this packet
+        {
+            if (m_curPacket == static_cast<size_t>(atol(lp)))
+            {
+                const GSContext &c = b.state.context;
+                printf("  prim#%llu %s ctx%d FB p=%u bw=%u psm=%02x msk=%08x | tme=%d abe=%d fst=%d iip=%d | alpha=%llx fix=%llu test=%llx | tex tbp=%u tbw=%u psm=%02x %ux%u tfx=%u tcc=%u cld=%u cbp=%u | v0=(%.1f,%.1f) v1=(%.1f,%.1f)\n",
+                       (unsigned long long)m_primIndex, b.state.prim.type == GS_PRIM_SPRITE ? "SPRITE" : b.state.prim.type == GS_PRIM_TRISTRIP ? "TSTRIP" : b.state.prim.type == GS_PRIM_TRIANGLE ? "TRI   " : "OTHER ",
+                       int(b.state.prim.ctxt), c.frame.fbp, c.frame.fbw, c.frame.psm, c.frame.fbmsk, int(b.state.prim.tme), int(b.state.prim.abe),
+                       int(b.state.prim.fst), int(b.state.prim.iip), (unsigned long long)(c.alpha & 0xFF), (unsigned long long)((c.alpha >> 32) & 0xFF),
+                       (unsigned long long)c.test, c.tex0.tbp0, c.tex0.tbw, c.tex0.psm, b.state.textureWidth, b.state.textureHeight, c.tex0.tfx,
+                       c.tex0.tcc, c.tex0.cld, c.tex0.cbp, b.vertices[0].x, b.vertices[0].y, b.vertices[1].x, b.vertices[1].y);
+            }
+        }
         if (m_flushEach) m_cpu.TextureFlush();   // debugging: make the CPU texture page cache fully coherent
         if (m_cpuOn) m_cpu.Submit(b);
         if (m_watch != ~size_t(0))
@@ -164,6 +228,28 @@ public:
                                gv.ReadVram(c.frame.psm, c.frame.fbp << 5, c.frame.fbw, x, y) & 0xFFFFFF);
                     printf("\n");
                 }
+            }
+        }
+        if (const char *snap = getenv("GT_SNAP"))
+        {
+            std::string list = std::string(",") + snap + ",";
+            if (list.find("," + std::to_string(m_primIndex) + ",") != std::string::npos)
+            {
+                uint32_t fbp = 8, fbw = 8, psm = 0, w = 512, h = 448;
+                if (const char *fb = getenv("GT_SNAP_FB")) sscanf(fb, "%u,%u,%x,%u,%u", &fbp, &fbw, &psm, &w, &h);
+                std::vector<uint8_t> img(size_t(w) * h * 4);
+                for (uint32_t y = 0; y < h; ++y)
+                    for (uint32_t x = 0; x < w; ++x)
+                    {
+                        const uint32_t px = m_cpu.ReadVram(psm, fbp << 5, fbw, x, y);
+                        uint8_t *o = &img[(size_t(y) * w + x) * 4];
+                        o[0] = px & 0xFF; o[1] = (px >> 8) & 0xFF; o[2] = (px >> 16) & 0xFF; o[3] = 255;
+                    }
+                char name[256];
+                snprintf(name, sizeof name, "%ssnap_p%u_prim%llu.ppm", getenv("GT_SNAP_PREFIX") ? getenv("GT_SNAP_PREFIX") : "", fbp,
+                         (unsigned long long)m_primIndex);
+                writePpmLocal(name, img, w, h);
+                printf("  [snap] wrote %s\n", name);
             }
         }
         ++m_primIndex;
@@ -227,11 +313,29 @@ public:
     void SnapshotVram(std::vector<uint8_t> &o) const override { m_cpu.SnapshotVram(o); }
     GSTransferSnapshot GetTransferSnapshot() const override { return m_cpu.GetTransferSnapshot(); }
 
+    // Dumps a color buffer (from the CPU reference state) as a PPM.
+    void SnapshotBuffer(const std::string &path, uint32_t fbp, uint32_t fbw, uint32_t psm, uint32_t w, uint32_t h) const
+    {
+        std::vector<uint8_t> img(size_t(w) * h * 4);
+        for (uint32_t y = 0; y < h; ++y)
+            for (uint32_t x = 0; x < w; ++x)
+            {
+                const uint32_t px = m_cpu.ReadVram(psm, fbp << 5, fbw, x, y);
+                uint8_t *o = &img[(size_t(y) * w + x) * 4];
+                o[0] = px & 0xFF; o[1] = (px >> 8) & 0xFF; o[2] = (px >> 16) & 0xFF; o[3] = 255;
+            }
+        writePpmLocal(path, img, w, h);
+    }
+
     PresentationFrame m_gpuFrame;
+    std::map<std::string, uint64_t> m_hist;
+    std::map<std::string, uint64_t> m_texFirst;
     double m_gpuMs = 0.0;
     uint8_t *m_vramPtr = nullptr;
+    size_t m_curPacket = 0;
     size_t m_watch = ~size_t(0);
     bool m_flushEach = false;
+    bool m_stats = false;
     uint64_t m_primIndex = 0;
     bool m_cpuOn = true, m_gpuOn = true;
 
@@ -299,6 +403,21 @@ int main(int argc, char **argv)
     std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE), gpuView(PS2_GS_VRAM_SIZE), gpuVram(PS2_GS_VRAM_SIZE);
     const uint8_t *state = d.bytes.data() + d.stateOffset;
     std::memcpy(vram.data(), state + vramOffset, vram.size());
+    if (getenv("GT_ZERO_VRAM")) std::fill(vram.begin(), vram.end(), uint8_t(0));   // diagnostic: frame must not depend on stale VRAM
+    if (const char *zp = getenv("GT_ZERO_PAGES"))   // "a-b[,c-d...]": zero 8 KiB pages [a,b) of the initial VRAM
+    {
+        std::string list = zp;
+        size_t pos = 0;
+        while (pos < list.size())
+        {
+            size_t end = list.find(',', pos);
+            if (end == std::string::npos) end = list.size();
+            unsigned a = 0, b = 0;
+            if (sscanf(list.substr(pos, end - pos).c_str(), "%u-%u", &a, &b) == 2)
+                for (unsigned pg = a; pg < b && pg < 512; ++pg) std::fill_n(vram.begin() + size_t(pg) * 8192, 8192, uint8_t(0));
+            pos = end + 1;
+        }
+    }
     GSRegisters priv{};
     applyPrivRegs(priv, d.bytes.data() + d.regsOffset);
 
@@ -313,10 +432,29 @@ int main(int argc, char **argv)
     double cpuMs = 0.0;
     auto segStart = Clock::now();
     size_t totalBad = 0;
+    std::string snapPackets;
+    if (const char *sp = getenv("GT_SNAP_PACKET")) snapPackets = std::string(",") + sp + ",";
+    size_t packetIndex = 0;
+    std::vector<uint64_t> primTargets;
+    if (const char *pt = getenv("GT_PRIM_PACKET"))   // "n1,n2,...": report the packet after which primitive n was issued
+    {
+        for (const char *c = pt; *c;) { primTargets.push_back(strtoull(c, nullptr, 10)); while (*c && *c != ',') ++c; if (*c) ++c; }
+    }
     for (const auto &p : d.packets)
     {
         if (p.kind == 0)
+        {
+            teePtr->m_curPacket = packetIndex;
             gs.processGIFPacket(d.bytes.data() + p.offset, p.size);
+            for (auto it = primTargets.begin(); it != primTargets.end();)
+                if (teePtr->m_primIndex > *it) { printf("  [map] primitive #%llu was issued by packet %zu\n", (unsigned long long)*it, packetIndex); it = primTargets.erase(it); }
+                else ++it;
+            if (!snapPackets.empty() && snapPackets.find("," + std::to_string(packetIndex) + ",") != std::string::npos)
+            {
+                const char *pre = getenv("GT_SNAP_PREFIX") ? getenv("GT_SNAP_PREFIX") : "";
+                teePtr->SnapshotBuffer(std::string(pre) + "pkt" + std::to_string(packetIndex) + ".ppm", 8, 8, 0, 512, 448);
+            }
+        }
         else if (p.kind == 3)
             applyPrivRegs(priv, d.bytes.data() + p.offset);
         else if (p.kind == 1)
@@ -382,6 +520,7 @@ int main(int argc, char **argv)
             if (frame >= maxFrames) break;
             segStart = Clock::now();
         }
+        ++packetIndex;
     }
     const auto &s = gpu.stats();
     printf("GPU executor: %llu primitives in %llu draws (splits: %llu target-mapping, %llu render-to-texture), %llu CLUT loads, "
@@ -390,6 +529,20 @@ int main(int argc, char **argv)
            (unsigned long long)s.splitsHazard, (unsigned long long)s.clutLoads, (unsigned long long)s.uploads,
            (unsigned long long)s.uploadChunks, (unsigned long long)s.unsupportedLines, (unsigned long long)s.unsupportedTransfers,
            (unsigned long long)s.selfFeedback);
+    if (getenv("GT_TEXRANGE"))
+    {
+        printf("--- textured primitives with TBP0 in range %s (frame 0 only) ---\n", getenv("GT_TEXRANGE"));
+        for (auto &kv : teePtr->m_hist)
+            printf("%6llu  first prim#%llu  %s\n", (unsigned long long)kv.second, (unsigned long long)teePtr->m_texFirst[kv.first], kv.first.c_str());
+    }
+    if (teePtr->m_stats)
+    {
+        std::vector<std::pair<uint64_t, std::string>> rows;
+        for (auto &kv : teePtr->m_hist) rows.push_back({kv.second, kv.first});
+        std::sort(rows.rbegin(), rows.rend());
+        printf("--- primitive classes over %u frames (count: class) ---\n", frame);
+        for (auto &r : rows) printf("%7llu  %s\n", (unsigned long long)r.first, r.second.c_str());
+    }
     if (getenv("GT_PROFILE"))
         printf("GPU time by category over %u frames (stalling timers): draws %.2f ms, uploads %.2f ms, CLUT loads %.2f ms  -> per frame: draws %.2f, uploads %.2f, clut %.2f\n",
                frame, s.gpuMsDraw, s.gpuMsUpload, s.gpuMsClut, s.gpuMsDraw / frame, s.gpuMsUpload / frame, s.gpuMsClut / frame);

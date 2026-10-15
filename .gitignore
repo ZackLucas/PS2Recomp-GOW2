@@ -26,3 +26,4 @@ android/.gradle/
 # Local build trees
 build-*/
 __pycache__/
+games/gow2/out/

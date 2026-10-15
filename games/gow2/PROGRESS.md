@@ -302,3 +302,63 @@ etapa era fidelidade, e a fidelidade ao CPU está provada.
 Variáveis de ambiente do replay: `GT_MODE=both|gpuonly|nullonly`, `GT_SERIALIZE`,
 `GT_PROFILE`, `GT_WATCH_WORD=<palavra>`, `GT_ISOLATE=<primitiva>`,
 `GT_CPU_FLUSH_EACH`.
+
+## Oráculo PCSX2 automatizado e bisseção (15/10/2026)
+
+Objetivo: descobrir por que o nosso GS (CPU e GPU, idênticos entre si) diverge do PCSX2
+no menu (erro ~12 contra a referência). Estado: **causa ainda não isolada**, método pronto.
+
+### Como rodar o oráculo (PCSX2 de verdade, sem intervenção)
+- `scripts/pcsx2_oracle.sh dump.gs out.png`: sobe um `Xwayland :7` isolado, roda o
+  dump no PCSX2 com renderizador de software e **captura a janela** (não o F8).
+  Usa uma pasta de dados própria (`/tmp/.../pcsx2-data`), com `SetupWizardIncomplete=false`,
+  `Renderer=13` e BIOS por caminho absoluto; não toca em `~/.config/PCSX2`.
+- `scripts/x11_nested.py list|key`: lista janelas / injeta teclas no X isolado.
+- `scripts/gsdump_trunc.py`: trunca um dump depois do pacote N e acrescenta um sprite
+  que copia um buffer (`--blit FBP,FBW,PSM --blit-wh W,H`) para o buffer de exibição.
+  Força `PRMODECONT=1` (o fluxo do jogo deixa 0, o que faz o GS ignorar TME/ABE/FST do PRIM).
+- `scripts/trunc_bisect.py K...`: mesmo dump truncado nos dois lados (PCSX2 e o nosso
+  replay), imprime o erro por corte. `scripts/vram_bisect.py a-b ...`: zera um intervalo
+  de páginas (8 KiB) da VRAM inicial nos dois lados e compara.
+- `scripts/gsdump_synth.py`: dumps sintéticos (T8/T4 lidos como CT32, CT32 lido como T8,
+  mapa de CLUT) para comparar uma feature por vez. Comparação exata por pixel funciona.
+- Replay: `GT_ZERO_PAGES=a-b`, `GT_PRIM_PACKET=n,..` (primitiva -> pacote),
+  `GT_LIST_PACKET=k` (lista as primitivas de um pacote), `GT_SNAP_PACKET`, `GT_WATCH_WORD`,
+  `GT_ISOLATE`, `GT_TEXRANGE=a-b`, `GT_STATS`, `GT_MODE=both|gpuonly|nullonly`.
+
+### Armadilhas descobertas (não repetir)
+- **O F8 do PCSX2 não devolve o frame exibido durante replay de GS dump.** Ele devolveu
+  sempre o menu, ignorando VRAM, pacotes e DISPFB. A janela é verdadeira; capture a janela.
+- O PCSX2 **ignora** `DISPFB` alterado nos registradores do dump; para ver um buffer
+  intermediário, copie-o para o buffer de exibição original com um sprite (blit).
+- A janela do PCSX2 mostra o frame com **escala vertical ~12/7** e o OSD
+  `Dump Frame/Packet Number` no canto; para comparação exata use escala inteira
+  (`IntegerScaling=true`, `linear_present_mode=0`) e derive o mapa de linhas de um controle.
+- **Mate o PCSX2 por PID antes de cada captura**; uma instância antiga ainda exibindo
+  outro dump contaminou várias medições (resultados "0,3% idêntico" eram falsos).
+- Nunca `pkill -f`/`pgrep -f` com `kill`: o padrão casa com o próprio shell.
+- O dump é **uma sequência de ~5 mil pacotes** e o PCSX2 o repete em laço; o frame muda
+  de acordo com o instante da captura se o dump não terminar em estado estável.
+
+### O que está comprovado
+- Layout de **T4 e T8** e **carga de CLUT** (8 e 4 bits, CSM1, CT32): idênticos ao PCSX2,
+  100% por pixel nos dumps sintéticos.
+- Sem VRAM residente (VRAM inicial zerada) nós e o PCSX2 concordamos (erro ~4, ruído ~2);
+  **com** VRAM real divergimos (~12). Só um intervalo de páginas explica tudo: zerar as
+  páginas **400-416** derruba o erro para 0,32 (texturas residentes T4 `tbp=12864` e T8
+  `tbp=12928`, CLUT residente em 432-448).
+- Com o mesmo dump truncado dos dois lados: erro 1 a 3 (ruído) **até o pacote 1212**;
+  **21 no pacote 1216**. O pacote 1216 emite as primitivas #7174-#7205: o **composite
+  aditivo do bloom** (32 triângulos, `alpha=0x48` = `Cs*As + Cd`, `FBMSK=ff000000`,
+  `test=31001` NEVER/FB_ONLY, textura CT24 256x256 em `tbp=4864` = buffer `p=152`).
+
+### Em aberto (próximos passos, em ordem)
+1. As duas pistas (páginas 400-416 vs. pacote 1216) não foram reconciliadas. Medir se o
+   **buffer borrado `p=152` já diverge antes do composite**: `TB_BLIT=152,4,1
+   TB_WH=256,256 TB_TAG=_p152 python3 scripts/trunc_bisect.py 1212 1184 1148`. Repetir
+   para `p=120` e `p=0`. Se divergir, descer a cadeia de borrão até o primeiro pacote.
+2. Se o buffer for igual, o defeito está no composite (blend aditivo, TEXA/AEM de CT24,
+   bilinear 2x, ordem das tiras). Testar com dump sintético de uma feature por vez.
+3. Corrigir **no modelo** (CPU e shader), com teste antes, e só então otimizar a GPU.
+4. Ligar o executor GPU ao runtime (contexto EGL próprio + leitura do frame para o raylib).
+Experimento descartado: aplicar o FBMSK no domínio de 16 bits (CT16) não mudou o erro.
