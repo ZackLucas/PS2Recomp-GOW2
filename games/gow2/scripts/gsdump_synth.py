@@ -44,6 +44,14 @@ def draw(tbp, tbw, tpsm, tw, th, w, h, cbp=0, cpsm=0, cld=0, nearest=True, dst=(
             (0x03, (w * 16) | ((h * 16) << 16)), (0x05, (off + w * 16) | ((off + h * 16) << 16))]
     return transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
 
+def tri_z(verts, zbp=120, ztst=1):
+    # flat triangle into CT24 p=232, depth written to a Z24 buffer at zbp (ZMSK=0); verts = [(x16, y16, z), ...] in 1/16 pixel
+    off = 2048 * 16
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, zbp | (1 << 24)), (0x47, (1 << 16) | (ztst << 17)),
+            (0x18, off | (off << 32)), (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)), (0x00, 3), (0x01, 0x80808080)]
+    for x, y, z in verts: regs.append((0x05, (off + x) | ((off + y) << 16) | (z << 32)))
+    return transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
+
 rnd = random.Random(1234)
 packets = b""
 DBP = 12928   # page 404, the same spot as the problematic T8 texture
@@ -83,6 +91,55 @@ elif exp == "t8_clut":
     pal = b"".join(struct.pack("<I", (i * 7 & 0xFF) | ((i * 13 & 0xFF) << 8) | ((i * 29 & 0xFF) << 16) | (0x80 << 24)) for i in range(256))
     packets += upload(14000, 1, 0x00, 16, 16, pal)
     packets += draw(DBP, 2, 0x13, 7, 7, 128, 128, cbp=14000, cpsm=0, cld=1)
+elif exp.startswith("z_plane2"):
+    # plane with gradient gx along x and gy along y (z_plane2_<gx>_<gy>, per pixel); Z24 read back as a texture
+    gx, gy = (int(v) for v in (exp[8:].strip("_").split("_") + ["7", "5"])[:2]) if exp[8:] else (7, 5)
+    x0, x1, y0, y1 = 8 * 16 + 5, 120 * 16 + 9, 8 * 16 + 3, 120 * 16 + 13
+    zl = 0x400000
+    packets += tri_z([(x0, y0, zl), (x1, y0, int(round(zl + (x1 - x0) / 16.0 * gx))), (x0, y1, int(round(zl + (y1 - y0) / 16.0 * gy)))])
+    packets += draw(120 * 32, 8, 0x31, 9, 9, 128, 128)
+elif exp.startswith("z_planex"):
+    # plane growing along x only, g per pixel (default 7); the Z24 buffer is read back as a texture
+    g = int(exp[8:] or 7)
+    x0, x1 = 8 * 16 + 5, 120 * 16 + 9
+    zl = 0x400000; zr = int(round(zl + (x1 - x0) / 16.0 * g))
+    packets += tri_z([(x0, 8 * 16 + 3, zl), (x1, 8 * 16 + 7, zr), (x0, 120 * 16 + 13, zl)])
+    packets += draw(120 * 32, 8, 0x31, 9, 9, 128, 128)
+elif exp.startswith("z_isoy"):
+    # same probe with the plane growing along y; boundary is a horizontal line. k counts in 1/256 pixel from the top vertex y=8+3/16
+    k = int(exp[6:] or 0)
+    y0, y1 = 8 * 16 + 3, 120 * 16 + 13
+    g = 256.0 / 16.0
+    zl = 0x400000; zr = int(round(zl + (y1 - y0) * g))
+    packets += tri_z([(8 * 16 + 5, y0, zl), (8 * 16 + 5, y1, zr), (120 * 16 + 9, y0, zl)])
+    off = 2048 * 16; K = 0x400000 + k
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, 120 | (1 << 24) | (1 << 32)), (0x47, (1 << 16) | (2 << 17)),
+            (0x18, off | (off << 32)), (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)), (0x00, 6),
+            (0x01, 0xFFFFFFFF), (0x05, off | (off << 16) | (K << 32)), (0x05, (off + 128 * 16) | ((off + 128 * 16) << 16) | (K << 32))]
+    packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
+elif exp.startswith("z_iso"):
+    # iso-line probe: depth plane that grows along x only (256 per pixel), then a white sprite at constant Z with ZTST=GEQUAL.
+    # White survives where plane Z <= K, so the vertical white/gray boundary shows where the model puts plane Z = K.
+    # z_iso<k>: K = 0x400000 + k  (k counts in 1/256 pixel so that the boundary falls between pixels)
+    k = int(exp[5:] or 0)
+    x0, x1 = 8 * 16 + 5, 120 * 16 + 9                          # same subpixel positions as z_tri
+    g = 256.0 / 16.0                                           # Z per 1/16 pixel
+    zl = 0x400000; zr = int(round(zl + (x1 - x0) * g))
+    packets += tri_z([(x0, 8 * 16 + 3, zl), (x1, 8 * 16 + 7, zr), (x0, 120 * 16 + 13, zl)])
+    off = 2048 * 16; K = 0x400000 + k
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, 120 | (1 << 24) | (1 << 32)), (0x47, (1 << 16) | (2 << 17)),
+            (0x18, off | (off << 32)), (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)), (0x00, 6),
+            (0x01, 0xFFFFFFFF), (0x05, off | (off << 16) | (K << 32)), (0x05, (off + 128 * 16) | ((off + 128 * 16) << 16) | (K << 32))]
+    packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
+elif exp in ("z24_upload", "ct24_upload"):   # control: upload RGB bytes as Z24 / CT24, read back as the same format
+    psm = 0x31 if exp == "z24_upload" else 0x01
+    img = bytes(rnd.randrange(256) for _ in range(64 * 64 * 3))
+    packets += upload(DBP, 1, psm, 64, 64, img)
+    packets += draw(DBP, 1, psm, 6, 6, 64, 64)
+elif exp in ("z_tri", "z_flat", "z_tri_ct24"):   # depth plane of one triangle, then view the Z24 buffer as a Z24 texture
+    z = (0x400000,) * 3 if exp == "z_flat" else (0x100000, 0x500000, 0x300000)
+    packets += tri_z([(8 * 16 + 5, 8 * 16 + 3, z[0]), (120 * 16 + 9, 8 * 16 + 7, z[1]), (8 * 16 + 11, 120 * 16 + 13, z[2])])
+    packets += draw(120 * 32, 8, 1 if exp == 'z_tri_ct24' else 0x31, 9, 9, 128, 128)   # the Z buffer as a texture
 else:
     raise SystemExit("unknown experiment")
 packets += bytes([3]) + regs0 + bytes([1, 0])

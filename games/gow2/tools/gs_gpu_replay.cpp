@@ -169,6 +169,7 @@ public:
             if (m_curPacket == static_cast<size_t>(atol(lp)))
             {
                 const GSContext &c = b.state.context;
+                printf("  [sc %u-%u,%u-%u ofs %u,%u zbp=%u zpsm=%02x]\n", c.scissor.x0, c.scissor.x1, c.scissor.y0, c.scissor.y1, c.xyoffset.ofx, c.xyoffset.ofy, c.zbuf.zbp, c.zbuf.psm);
                 printf("  prim#%llu %s ctx%d FB p=%u bw=%u psm=%02x msk=%08x | tme=%d abe=%d fst=%d iip=%d | alpha=%llx fix=%llu test=%llx | tex tbp=%u tbw=%u psm=%02x %ux%u tfx=%u tcc=%u cld=%u cbp=%u | v0=(%.1f,%.1f) v1=(%.1f,%.1f)\n",
                        (unsigned long long)m_primIndex, b.state.prim.type == GS_PRIM_SPRITE ? "SPRITE" : b.state.prim.type == GS_PRIM_TRISTRIP ? "TSTRIP" : b.state.prim.type == GS_PRIM_TRIANGLE ? "TRI   " : "OTHER ",
                        int(b.state.prim.ctxt), c.frame.fbp, c.frame.fbw, c.frame.psm, c.frame.fbmsk, int(b.state.prim.tme), int(b.state.prim.abe),
@@ -268,6 +269,13 @@ public:
     }
     void BeginTransfer(const GSTransferCommand &c) override
     {
+        if (const char *lx = getenv("GT_LIST_XFER"))   // "a-b": log host->local transfers issued by packets a..b
+        {
+            unsigned a = 0, bb = 0;
+            if (sscanf(lx, "%u-%u", &a, &bb) == 2 && m_curPacket >= a && m_curPacket <= bb)
+                printf("  [xfer pkt %zu] dir=%u dbp=%u dbw=%u dpsm=%02x dst=(%u,%u) size=%ux%u\n", m_curPacket, c.direction,
+                       c.bitbltbuf.dbp, c.bitbltbuf.dbw, c.bitbltbuf.dpsm, c.trxpos.dsax, c.trxpos.dsay, c.trxreg.rrw, c.trxreg.rrh);
+        }
         if (m_cpuOn) m_cpu.BeginTransfer(c);
         if (!m_gpuOn) return;
         const auto t0 = Clock::now();
@@ -449,6 +457,14 @@ int main(int argc, char **argv)
             for (auto it = primTargets.begin(); it != primTargets.end();)
                 if (teePtr->m_primIndex > *it) { printf("  [map] primitive #%llu was issued by packet %zu\n", (unsigned long long)*it, packetIndex); it = primTargets.erase(it); }
                 else ++it;
+            if (const char *vp = getenv("GT_VRAM_PACKETS"))   // "a,b,...": write the CPU model's raw 4 MiB VRAM after these packets
+            {
+                if ((std::string(",") + vp + ",").find("," + std::to_string(packetIndex) + ",") != std::string::npos)
+                {
+                    const std::string fn = std::string(getenv("GT_VRAM_PREFIX") ? getenv("GT_VRAM_PREFIX") : "vram_") + std::to_string(packetIndex) + ".bin";
+                    if (FILE *f = fopen(fn.c_str(), "wb")) { fwrite(teePtr->m_vramPtr, 1, 4u << 20, f); fclose(f); }
+                }
+            }
             if (!snapPackets.empty() && snapPackets.find("," + std::to_string(packetIndex) + ",") != std::string::npos)
             {
                 const char *pre = getenv("GT_SNAP_PREFIX") ? getenv("GT_SNAP_PREFIX") : "";

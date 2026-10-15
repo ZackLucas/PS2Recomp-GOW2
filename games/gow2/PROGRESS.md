@@ -362,3 +362,22 @@ no menu (erro ~12 contra a referência). Estado: **causa ainda não isolada**, m
 3. Corrigir **no modelo** (CPU e shader), com teste antes, e só então otimizar a GPU.
 4. Ligar o executor GPU ao runtime (contexto EGL próprio + leitura do frame para o raylib).
 Experimento descartado: aplicar o FBMSK no domínio de 16 bits (CT16) não mudou o erro.
+
+## Regra do GS encontrada contra o PCSX2 (2026-10-15)
+
+Duas regras do rasterizador de triângulos diferiam do PCSX2 (medido com dumps sintéticos, sonda de isolinha
+com teste de Z GEQUAL, escala 2x exata da janela):
+
+1. **Centro do pixel em coordenadas inteiras**: cobertura e interpolação avaliam em (x, y), não (x+0.5, y+0.5).
+   O PCSX2 começa o triângulo uma coluna depois e posiciona a isolinha de Z um pixel antes. Confirmado em X e Y.
+2. **Z é truncado**, não arredondado (`z + 0.5`): diferença exata de +1 em 432/432 amostras de um plano em X.
+
+Com as duas, um plano com gradiente nos dois eixos fica idêntico ao PCSX2 em 957/1069 amostras (±1 no resto, aritmética
+de ponto fixo). No quadro real, o erro do buffer p=152 (Z-buffer, zbp=120) após o pacote 22 caiu de 6.9 para 3.8.
+
+O patch está em `games/gow2/patches/gs-pixel-center-and-z-trunc.patch` (CPU + shader). **Não aplicado** porque
+3 testes unitários do runtime codificam a convenção antiga (STQ S=0.75/Q=1.375, filtro linear STQ e
+"triangle fan quad sem buracos"); é preciso rever cada um contra o PCSX2 antes de aplicar.
+Ferramentas novas: `GT_LIST_XFER`, `GT_VRAM_PACKETS`, scissor/offset em `GT_LIST_PACKET`; experimentos
+`z_tri`, `z_flat`, `z_iso<k>`, `z_isoy<k>`, `z_plane2_<gx>_<gy>`, `z_planex<g>`, `z24_upload` em gsdump_synth.py.
+Armadilha: TBP0 da textura é em blocos (página = 32 blocos); ZBP/FBP são em páginas.
