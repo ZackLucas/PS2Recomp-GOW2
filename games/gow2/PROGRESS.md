@@ -381,13 +381,17 @@ Armadilha: TBP0 da textura é em blocos (página = 32 blocos); ZBP/FBP são em p
 3. **Sprites: UV sem o +0,5** (mesma regra do centro inteiro; sonda `spr_up_nearest/linear`, ampliação 16→32:
    o PCSX2 dá R=8·(x−9) no linear, nós 8·(x−8,5); G 88 vs 92). Aplicado em CPU e shader.
 
+4. **Regra de borda top-left** nos triângulos (sonda `tri_edge`, retângulo de 2 triângulos opacos): o PCSX2 cobre
+   20..39 em X e Y (borda direita/inferior excluída) e a diagonal pertence ao triângulo de baixo; nós cobríamos
+   20..40 e deixávamos a diagonal para ambos (com blend aditivo gerava listras claras). Aplicado em CPU e shader.
+
 Medido contra o PCSX2 (erro médio por canal, mesmo dump truncado dos dois lados):
 
-| corte | antes | depois das 3 regras |
+| corte | antes | depois das 4 regras |
 |---|---|---|
 | quadro inteiro, pacote 1212 | 1,9 | 1,9 |
-| quadro inteiro, pacote 1216 (composite) | 21,3 | 8,8 |
-| quadro inteiro, fim (1321) | 11,6 | 5,5 |
+| quadro inteiro, pacote 1216 (composite) | 21,3 | 7,8 |
+| quadro inteiro, fim (1321) | 11,6 | 5,05 |
 | `p=152` (blur/Z), pacote 1212 | 21,7 | 7,5 |
 
 ### Próximos passos (em ordem)

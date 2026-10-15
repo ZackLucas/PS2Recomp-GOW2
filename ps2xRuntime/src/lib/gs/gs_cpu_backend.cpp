@@ -1340,6 +1340,11 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
     const float winding = (denom < 0.0f) ? -1.0f : 1.0f;
     const float invAbsDenom = 1.0f / std::fabs(denom);
     constexpr float kEdgeEpsilon = 1.0e-4f;
+    // d(w_i)/dx and d(w_i)/dy (up to the positive factor invAbsDenom): the inward normal of each edge.
+    const float gx0 = (fy1 - fy2) * winding, gy0 = (fx2 - fx1) * winding;
+    const float gx1 = (fy2 - fy0) * winding, gy1 = (fx0 - fx2) * winding;
+    const float gx2 = -(gx0 + gx1), gy2 = -(gy0 + gy1);
+    auto edgeIsTopLeft = [](float gx, float gy) { return gx > 0.0f || (gx == 0.0f && gy > 0.0f); };
 
     for (int y = minY; y <= maxY; ++y)
     {
@@ -1353,6 +1358,12 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
             float w2 = 1.0f - w0 - w1;
 
             if (w0 < -kEdgeEpsilon || w1 < -kEdgeEpsilon || w2 < -kEdgeEpsilon)
+                continue;
+            // Top-left fill rule: a pixel sitting exactly on an edge belongs to the triangle only if that edge
+            // is a left edge (interior towards +x) or a top edge (horizontal, interior towards +y).
+            if ((w0 <= kEdgeEpsilon && !edgeIsTopLeft(gx0, gy0)) ||
+                (w1 <= kEdgeEpsilon && !edgeIsTopLeft(gx1, gy1)) ||
+                (w2 <= kEdgeEpsilon && !edgeIsTopLeft(gx2, gy2)))
                 continue;
 
             double z = v0.z * w0 + v1.z * w1 + v2.z * w2;

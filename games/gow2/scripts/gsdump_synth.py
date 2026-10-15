@@ -91,6 +91,16 @@ elif exp == "t8_clut":
     pal = b"".join(struct.pack("<I", (i * 7 & 0xFF) | ((i * 13 & 0xFF) << 8) | ((i * 29 & 0xFF) << 16) | (0x80 << 24)) for i in range(256))
     packets += upload(14000, 1, 0x00, 16, 16, pal)
     packets += draw(DBP, 2, 0x13, 7, 7, 128, 128, cbp=14000, cpsm=0, cld=1)
+elif exp == "tri_edge":
+    # rectangle (20,20)-(40,40) as two opaque triangles, colours 0x30 (first) and 0xC0 (second): a diagonal pixel shows
+    # 0xC0 if the second triangle covers it (drawn last), 0x30 if only the first does, black if neither.
+    off = 2048 * 16
+    def V(x, y): return (0x05, (off + x * 16) | ((off + y * 16) << 16))
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, 120 | (1 << 24) | (1 << 32)), (0x47, (1 << 16) | (1 << 17)),
+            (0x18, off | (off << 32)), (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)), (0x00, 3)]
+    regs += [(0x01, 0x80303030), V(20, 20), V(40, 20), V(20, 40)]
+    regs += [(0x01, 0x80C0C0C0), V(40, 20), V(40, 40), V(20, 40)]
+    packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
 elif exp in ("spr_up_nearest", "spr_up_linear"):
     # 16x16 CT32 gradient (R=16*x, G=16*y, B=0x40) stretched by a sprite to 32x32 at (8,8): shows the sprite UV rule
     img = b"".join(struct.pack("<I", (16 * x) | ((16 * y) << 8) | (0x40 << 16) | (0x80 << 24)) for y in range(16) for x in range(16))

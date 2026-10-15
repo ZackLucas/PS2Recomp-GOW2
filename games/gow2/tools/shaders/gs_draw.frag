@@ -43,6 +43,14 @@ void main()
         precise float w2 = 1.0 - w0 - w1;
         const float eps = 1.0e-4;
         if (w0 < -eps || w1 < -eps || w2 < -eps) discard;
+        {   // top-left fill rule (see GSCpuBackend::DrawTriangle): on-edge pixels only for left/top edges
+            const float gx0 = (fy1 - fy2) * winding, gy0 = (fx2 - fx1) * winding;
+            const float gx1 = (fy2 - fy0) * winding, gy1 = (fx0 - fx2) * winding;
+            const float gx2 = -(gx0 + gx1), gy2 = -(gy0 + gy1);
+            if (w0 <= eps && !(gx0 > 0.0 || (gx0 == 0.0 && gy0 > 0.0))) discard;
+            if (w1 <= eps && !(gx1 > 0.0 || (gx1 == 0.0 && gy1 > 0.0))) discard;
+            if (w2 <= eps && !(gx2 > 0.0 || (gx2 == 0.0 && gy2 > 0.0))) discard;
+        }
 
         precise double zd = v0.z * double(w0) + v1.z * double(w1) + v2.z * double(w2);
         z = uint(zd);
