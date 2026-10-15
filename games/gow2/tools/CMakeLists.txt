@@ -50,3 +50,11 @@ if(GOW2_EGL_LIB AND GOW2_GL_LIB)
     target_compile_definitions(gow2_gs_draw_test PRIVATE GOW2_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
     target_link_libraries(gow2_gs_draw_test PRIVATE ps2_runtime ${GOW2_EGL_LIB} ${GOW2_GL_LIB})
 endif()
+
+# Replay a PCSX2 GS dump through the frontend with CPU + GPU backends and compare them.
+if(GOW2_EGL_LIB AND GOW2_GL_LIB)
+    add_executable(gow2_gs_gpu_replay gs_gpu_replay.cpp)
+    target_include_directories(gow2_gs_gpu_replay PRIVATE ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
+    target_compile_definitions(gow2_gs_gpu_replay PRIVATE GOW2_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+    target_link_libraries(gow2_gs_gpu_replay PRIVATE ps2_runtime ${GOW2_EGL_LIB} ${GOW2_GL_LIB})
+endif()

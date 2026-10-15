@@ -263,3 +263,42 @@ Próximos passos, em ordem (cada um com teste contra a implementação em C++):
    também não aplica), regras de borda do GS real (aqui usamos as do modelo em CPU). (`ARB_fragment_shader_interlock`): função
    de textura, filtro, teste de alfa, teste de profundidade, blend a/b/c/d, máscaras.
 4. Replay do frame do menu e comparação com a VRAM do GS em CPU e com o PCSX2.
+
+### Etapa 4: frame real do menu, GPU contra CPU contra PCSX2 (15/10/2026)
+
+`tools/gs_gpu_exec.h` (executor) + `tools/gs_gpu_replay.cpp` (`gow2_gs_gpu_replay`): o
+frontend real do GS interpreta o dump e chama um backend "tee" que repassa cada comando
+ao rasterizador em CPU e ao executor em GPU. Compara a VRAM por frame e as imagens.
+
+Resultado (4 frames do menu, ~7,5 mil primitivas por frame):
+- **VRAM:** idêntica ao CPU em todas as palavras, **menos 10 por frame**, sempre as
+  mesmas. Causa investigada e explicada: o sprite `prim#7206` renderiza em `p=120` (o
+  Z-buffer reaproveitado) e lê como textura o frame principal com `v` até 449, uma
+  linha além do frame (448). Essa linha cai nas páginas do próprio destino. É
+  realimentação dentro da primitiva: o CPU lê o que acabou de escrever, a GPU lê o
+  conteúdo anterior ao draw (o que um renderizador de hardware faz). Em hardware real
+  depende do cache de textura. Hipóteses descartadas por teste: corrida de ordem
+  (serializar não mudou) e cache de páginas do CPU (invalidar a cada primitiva não mudou).
+- **Imagem apresentada:** GPU e CPU idênticas (diferença média 0,00; 0% de pixels > 8),
+  nos 4 frames.
+- **Contra o PCSX2:** GPU e CPU têm exatamente o mesmo erro (1,42 no frame 0 e ~11,3 nos
+  demais). Ou seja, o modelo compartilhado diverge do hardware; isso não é defeito da GPU.
+  Próximo passo: achar qual regra do GS real ambos simplificam.
+- **Tempo, caminho realista (frontend + GPU, sem o rasterizador CPU), por frame:**
+  frontend 1,1 ms; total ~14,6 ms. GPU por categoria: draws ~12 ms, uploads 0,12 ms,
+  CLUT 0,23 ms. O rasterizador CPU leva ~650 ms: ~45x mais lento.
+  Observação de método: com o CPU rodando junto, a GPU parecia custar ~5 ms porque o
+  trabalho do CPU escondia a latência; o número realista é o de `GT_MODE=gpuonly`.
+- Execução em lotes: 980 draws em 4 frames; 76 divisões por mudança de alvo e 756 por
+  render-to-texture. A regra de hazard é conservadora (usa o tamanho do scissor), então
+  esses números são um teto.
+
+Onde está o custo de 12 ms (hipóteses a medir, não medidas): `double` na interpolação
+de Z e em `gsDiv` (fp64 é 1/64 da taxa nas placas de consumo), quads de bounding box
+em vez de triângulos justos, leitura de textura via SSBO com conta de swizzle por
+amostra, e o número de draws/barreiras. Nenhuma foi otimizada ainda; o objetivo desta
+etapa era fidelidade, e a fidelidade ao CPU está provada.
+
+Variáveis de ambiente do replay: `GT_MODE=both|gpuonly|nullonly`, `GT_SERIALIZE`,
+`GT_PROFILE`, `GT_WATCH_WORD=<palavra>`, `GT_ISOLATE=<primitiva>`,
+`GT_CPU_FLUSH_EACH`.
