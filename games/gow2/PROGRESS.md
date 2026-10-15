@@ -378,8 +378,20 @@ Ferramentas novas: `GT_LIST_XFER`, `GT_VRAM_PACKETS`, scissor/offset em `GT_LIST
 `z_tri`, `z_flat`, `z_iso<k>`, `z_isoy<k>`, `z_plane2_<gx>_<gy>`, `z_planex<g>`, `z24_upload` em gsdump_synth.py.
 Armadilha: TBP0 da textura é em blocos (página = 32 blocos); ZBP/FBP são em páginas.
 
+3. **Sprites: UV sem o +0,5** (mesma regra do centro inteiro; sonda `spr_up_nearest/linear`, ampliação 16→32:
+   o PCSX2 dá R=8·(x−9) no linear, nós 8·(x−8,5); G 88 vs 92). Aplicado em CPU e shader.
+
+Medido contra o PCSX2 (erro médio por canal, mesmo dump truncado dos dois lados):
+
+| corte | antes | depois das 3 regras |
+|---|---|---|
+| quadro inteiro, pacote 1212 | 1,9 | 1,9 |
+| quadro inteiro, pacote 1216 (composite) | 21,3 | 8,8 |
+| quadro inteiro, fim (1321) | 11,6 | 5,5 |
+| `p=152` (blur/Z), pacote 1212 | 21,7 | 7,5 |
+
 ### Próximos passos (em ordem)
-1. Medir de novo o erro do quadro contra o PCSX2 (era ~12) e a bisseção `p=152` (cortes 22, 200, 1212).
-2. Achar o resíduo (~+4 no byte baixo do Z em prims reais: ponto fixo do plano, borda top-left com amostras
-   inteiras, regra dos sprites).
-3. Só então otimizar os desenhos da GPU (~12 ms/quadro) e ligar o `GpuGsExecutor` ao `ps2EntryRunner`.
+1. Resíduo: o erro do blur cresce devagar de 5 (pacote 400) a 11 (1050) e o fim do quadro ainda está em 5,5
+   (piso do método ~2). Suspeitos: ponto fixo do plano de Z, borda top-left com amostras inteiras,
+   regra de cobertura de sprites, arredondamento de UV/cores.
+2. Só então otimizar os desenhos da GPU (~12 ms/quadro) e ligar o `GpuGsExecutor` ao `ps2EntryRunner`.

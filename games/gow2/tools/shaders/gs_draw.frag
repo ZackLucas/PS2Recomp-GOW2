@@ -102,8 +102,8 @@ void main()
                 u1f = gsDiv(v1.s, q1) * float(ts.w); v1f = gsDiv(v1.t, q1) * float(ts.h);
             }
             precise float spriteW = max(float(spanX), 1.0), spriteH = max(float(spanY), 1.0);
-            precise float ty = gsDiv(float(y - y0) + 0.5, spriteH);
-            precise float tx = gsDiv(float(x - x0) + 0.5, spriteW);
+            precise float ty = gsDiv(float(y - y0), spriteH);
+            precise float tx = gsDiv(float(x - x0), spriteW);
             precise float texVf = v0f + (v1f - v0f) * ty;
             precise float texUf = u0f + (u1f - u0f) * tx;
             if (ts.fst != 0u)

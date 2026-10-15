@@ -34,14 +34,14 @@ def upload(dbp, dbw, dpsm, w, h, raw):
     setup = ad((0x50, (dbp << 32) | (dbw << 48) | (dpsm << 56)), (0x51, 0), (0x52, w | (h << 32)), (0x53, 0))
     return transfer(tag(4, 0, 1, 0xE, eop=0) + setup + tag(len(raw) // 16, 2) + raw)
 
-def draw(tbp, tbw, tpsm, tw, th, w, h, cbp=0, cpsm=0, cld=0, nearest=True, dst=(232, 8, 1)):
+def draw(tbp, tbw, tpsm, tw, th, w, h, cbp=0, cpsm=0, cld=0, nearest=True, dst=(232, 8, 1), sw=None, sh=None, sx=0, sy=0):
     off = 2048 * 16
     tex0 = tbp | (tbw << 14) | (tpsm << 20) | (tw << 26) | (th << 30) | (1 << 34) | (1 << 35) | (cbp << 37) | (cpsm << 51) | (0 << 55) | (0 << 56) | (cld << 61)
     regs = [(0x4C, dst[0] | (dst[1] << 16) | (dst[2] << 24)), (0x4E, 1 << 32), (0x47, (1 << 16) | (1 << 17)),
             (0x06, tex0), (0x14, 0 if nearest else (1 << 5) | (1 << 6)), (0x08, 5), (0x18, off | (off << 32)),
             (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)), (0x00, 6 | (1 << 4) | (1 << 8)),
-            (0x01, 0x80808080), (0x03, 0), (0x05, off | (off << 16)),
-            (0x03, (w * 16) | ((h * 16) << 16)), (0x05, (off + w * 16) | ((off + h * 16) << 16))]
+            (0x01, 0x80808080), (0x03, 0), (0x05, (off + sx * 16) | ((off + sy * 16) << 16)),
+            (0x03, (w * 16) | ((h * 16) << 16)), (0x05, (off + (sx + (sw or w)) * 16) | ((off + (sy + (sh or h)) * 16) << 16))]
     return transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
 
 def tri_z(verts, zbp=120, ztst=1):
@@ -91,6 +91,11 @@ elif exp == "t8_clut":
     pal = b"".join(struct.pack("<I", (i * 7 & 0xFF) | ((i * 13 & 0xFF) << 8) | ((i * 29 & 0xFF) << 16) | (0x80 << 24)) for i in range(256))
     packets += upload(14000, 1, 0x00, 16, 16, pal)
     packets += draw(DBP, 2, 0x13, 7, 7, 128, 128, cbp=14000, cpsm=0, cld=1)
+elif exp in ("spr_up_nearest", "spr_up_linear"):
+    # 16x16 CT32 gradient (R=16*x, G=16*y, B=0x40) stretched by a sprite to 32x32 at (8,8): shows the sprite UV rule
+    img = b"".join(struct.pack("<I", (16 * x) | ((16 * y) << 8) | (0x40 << 16) | (0x80 << 24)) for y in range(16) for x in range(16))
+    packets += upload(DBP, 1, 0x00, 16, 16, img)
+    packets += draw(DBP, 1, 0x00, 4, 4, 16, 16, nearest=(exp == "spr_up_nearest"), sw=32, sh=32, sx=8, sy=8)
 elif exp.startswith("z_plane2"):
     # plane with gradient gx along x and gy along y (z_plane2_<gx>_<gy>, per pixel); Z24 read back as a texture
     gx, gy = (int(v) for v in (exp[8:].strip("_").split("_") + ["7", "5"])[:2]) if exp[8:] else (7, 5)
