@@ -186,3 +186,28 @@ com as mesmas 58 trocas de estado, textura (conteúdo aleatório), blend e depth
 Limites deste número: o shader é simplificado (sem CLUT nem decodificação de
 swizzle do GS, blend por função fixa) e as texturas são ruído. A decodificação das
 texturas a partir da VRAM do PS2 **não** foi medida e é onde o custo real vai estar.
+
+## GS em GPU, nível 1: VRAM como buffer (15/10/2026)
+
+Decisão: o GS vai para a GPU com a **VRAM do PS2 inteira como um buffer** (4 MiB de
+`uint`). Os uploads de imagem do jogo vão crus para a GPU (um compute shader grava no
+layout embaralhado), e o shader de fragmento amostra direto desse buffer, com a conta
+de endereço e a paleta feitas ali. A CPU não decodifica textura. Frame buffer, Z e
+textura são o mesmo buffer, então o aliasing do GS deixa de ser problema.
+
+Feito e testado:
+- `shaders/gs_vram.glsl`: endereçamento de todos os 13 formatos (CT32/24/16/16S, T8,
+  T4, T8H, T4HL, T4HH, Z32/24/16/16S). As tabelas (`gs_vram_tables.glsl`) são
+  **geradas** de `ps2_gs_memory.cpp` por `scripts/gen_gs_tables_glsl.py`.
+- `gow2_gs_addr_test`: compara a leitura em GLSL com `GSMem::Read*` em 13,6 milhões
+  de leituras aleatórias (bp, bw ímpar incluso, x e y até 2047, endereços que dão a
+  volta). Resultado: 0 divergências. O teste foi validado quebrando uma tabela de
+  propósito (1,04 milhão de falhas).
+
+Próximos passos, em ordem (cada um com teste contra a implementação em C++):
+1. Escrita de pixel (os mesmos 13 formatos) e upload de imagem (IMAGE / BITBLTBUF /
+   TRXPOS / TRXREG) em compute shader.
+2. Carga de CLUT (CSM1, CPSM CT32/CT16, CSA) e amostragem paletizada.
+3. Fragment shader com ordenação por pixel (`ARB_fragment_shader_interlock`): função
+   de textura, filtro, teste de alfa, teste de profundidade, blend a/b/c/d, máscaras.
+4. Replay do frame do menu e comparação com a VRAM do GS em CPU e com o PCSX2.
