@@ -352,16 +352,10 @@ no menu (erro ~12 contra a referência). Estado: **causa ainda não isolada**, m
   aditivo do bloom** (32 triângulos, `alpha=0x48` = `Cs*As + Cd`, `FBMSK=ff000000`,
   `test=31001` NEVER/FB_ONLY, textura CT24 256x256 em `tbp=4864` = buffer `p=152`).
 
-### Em aberto (próximos passos, em ordem)
-1. As duas pistas (páginas 400-416 vs. pacote 1216) não foram reconciliadas. Medir se o
-   **buffer borrado `p=152` já diverge antes do composite**: `TB_BLIT=152,4,1
-   TB_WH=256,256 TB_TAG=_p152 python3 scripts/trunc_bisect.py 1212 1184 1148`. Repetir
-   para `p=120` e `p=0`. Se divergir, descer a cadeia de borrão até o primeiro pacote.
-2. Se o buffer for igual, o defeito está no composite (blend aditivo, TEXA/AEM de CT24,
-   bilinear 2x, ordem das tiras). Testar com dump sintético de uma feature por vez.
-3. Corrigir **no modelo** (CPU e shader), com teste antes, e só então otimizar a GPU.
-4. Ligar o executor GPU ao runtime (contexto EGL próprio + leitura do frame para o raylib).
-Experimento descartado: aplicar o FBMSK no domínio de 16 bits (CT16) não mudou o erro.
+### Situação (atualizada)
+A hipótese do composite do bloom estava errada: `p=152` está **dentro do Z-buffer** (`zbp=120`, Z24 ocupa as
+páginas 120-232) e o erro nasce nos pacotes 21-22 (controle: 0,14 com 0 pacotes). A causa é a regra de centro
+do pixel e o truncamento do Z, descritos abaixo. Experimento descartado: FBMSK no domínio de 16 bits.
 
 ## Regra do GS encontrada contra o PCSX2 (2026-10-15)
 
@@ -381,3 +375,13 @@ O patch está em `games/gow2/patches/gs-pixel-center-and-z-trunc.patch` (CPU + s
 Ferramentas novas: `GT_LIST_XFER`, `GT_VRAM_PACKETS`, scissor/offset em `GT_LIST_PACKET`; experimentos
 `z_tri`, `z_flat`, `z_iso<k>`, `z_isoy<k>`, `z_plane2_<gx>_<gy>`, `z_planex<g>`, `z24_upload` em gsdump_synth.py.
 Armadilha: TBP0 da textura é em blocos (página = 32 blocos); ZBP/FBP são em páginas.
+
+### Próximos passos (em ordem)
+1. Rever os 3 testes unitários que codificam a convenção antiga (`ps2_gs_tests.cpp`: STQ S=0,75/Q=1,375;
+   filtro linear STQ; "triangle fan subpixel quad sem buracos", linha ~3808) contra a semântica do PCSX2,
+   atualizá-los e aplicar o patch. Rodar `gow2_gs_*_test` e `ps2x_tests` (438).
+2. Repetir `trunc_bisect.py` com `TB_BLIT=152,4,1 TB_WH=256,256` nos cortes 22, 200 e 1212 e o erro do quadro
+   inteiro (era ~12). Hoje: 3,8 / 5,3 / 21,7 com o patch.
+3. Achar o resíduo: ~+4 no byte baixo do Z em prims reais (suspeitos: ponto fixo do plano, regra de borda
+   top-left com amostras inteiras, regra dos sprites).
+4. Só então otimizar os desenhos da GPU (~12 ms/quadro) e ligar o `GpuGsExecutor` ao `ps2EntryRunner`.
