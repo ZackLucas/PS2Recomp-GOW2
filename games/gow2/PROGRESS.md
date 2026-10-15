@@ -399,3 +399,36 @@ Medido contra o PCSX2 (erro médio por canal, mesmo dump truncado dos dois lados
    (piso do método ~2). Suspeitos: ponto fixo do plano de Z, borda top-left com amostras inteiras,
    regra de cobertura de sprites, arredondamento de UV/cores.
 2. Só então otimizar os desenhos da GPU (~12 ms/quadro) e ligar o `GpuGsExecutor` ao `ps2EntryRunner`.
+
+## Medição exata contra o PCSX2 (2026-10-15, noite)
+
+**Método** (`scripts/trunc_exact.py`, sondas em `gsdump_synth.py`): dump truncado, varredura progressiva forçada,
+PCSX2 com `IntegerScaling=true`, `linear_present_mode=0`, `AspectRatio=Stretch`; escala horizontal 2x exata e vertical
+345/128, origem (14,55); cada pixel de origem é lido na sua posição de tela (nearest). Só as ~214 primeiras linhas
+cabem na janela e as 16 primeiras são ignoradas (texto "Dump Frame" do PCSX2). Controle (corte 0): 95-98% idênticos.
+**Armadilha grave:** instâncias antigas do PCSX2 se acumulam (20+ chegaram a ficar vivas) e a captura mostra o
+quadro de um dump anterior; o `kill()` agora casa pela linha de comando (`pcsx2-v2.9`) com SIGKILL e espera sumir.
+Capturas feitas durante o acúmulo foram descartadas. O valor de `filter` (2 ou 3) não altera nada.
+
+Sondas sintéticas (nós vs PCSX2, pixel a pixel): blend `Cs*As+Cd*(1-As)` 100%, modulate e highlight 100%,
+sprite ampliado linear e nearest 100%, `tri_edge` 100%, triângulo texturizado linear 99,9%, Gouraud 96,6%
+(±1 em 3%: aritmética de ponto fixo).
+
+Quadro do menu (região 512x214, erro médio abs por canal e % de pixels com erro >8):
+
+| corte | erro | >8 |
+|---|---|---|
+| 1212 cena antes do composite | 0,75 | 0,02% |
+| 1216 depois do composite | 7,0 | 60% |
+| 1321 fim do quadro | 3,5 | 0,6% |
+
+Cadeia do bloom (erro por etapa, exato): `p=152` 1186 **0,6**; `p=120` 1188 **0,9**; 1190 1,6; 1192 2,2;
+1194 2,8; 1208 **6,8** (2,4% >8); 1210 7,0; 1212 7,8 (37% >8). O erro cresce passada a passada; salto grande entre
+1194 e 1208. O composite (1216) herda isso.
+
+### Próximos passos
+1. Listar com `GT_LIST_PACKET=1195-1208` os sprites entre 1194 e 1208 e sondar o que eles têm de diferente
+   (blend `alpha=64` = (Cs-Cd)*FIX>>7+Cd, `FBMSK=ff000000`, teste `31001` NEVER/FB_ONLY, leitura e escrita no mesmo
+   buffer p=152 no 1212: auto-realimentação, ordem de leitura).
+2. Investigar por que o PCSX2 filtra linearmente triângulos com TEX1=0 (sondas `tri_texN`), mas não sprites.
+3. Depois: otimizar a GPU e ligar o `GpuGsExecutor` ao runtime.

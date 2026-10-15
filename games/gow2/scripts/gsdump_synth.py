@@ -91,6 +91,72 @@ elif exp == "t8_clut":
     pal = b"".join(struct.pack("<I", (i * 7 & 0xFF) | ((i * 13 & 0xFF) << 8) | ((i * 29 & 0xFF) << 16) | (0x80 << 24)) for i in range(256))
     packets += upload(14000, 1, 0x00, 16, 16, pal)
     packets += draw(DBP, 2, 0x13, 7, 7, 128, 128, cbp=14000, cpsm=0, cld=1)
+elif exp.startswith("blend_grid"):
+    # 16x16 cells of 8x8 pixels at (0,16): destination Cd = 16*i+7 (gray, opaque), then source Cs=0xB5 with alpha As = 16*j+9
+    # blended with ALPHA (a=Cs,b=Cd,c=As,d=Cd): shows the exact rounding of (Cs-Cd)*As>>7 + Cd, per (Cd, As) pair
+    mode = exp[10:] or "44"            # ALPHA low byte, hex (default 0x44: Cs*As + Cd*(1-As))
+    off = 2048 * 16
+    def V(x, y): return (0x05, (off + x * 16) | ((off + y * 16) << 16))
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, 120 | (1 << 24) | (1 << 32)), (0x47, (1 << 16) | (1 << 17)),
+            (0x18, off | (off << 32)), (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)), (0x00, 6)]
+    for j in range(16):
+        for i in range(16):
+            cd = 16 * i + 7
+            regs += [(0x01, 0x80000000 | cd | (cd << 8) | (cd << 16)), V(i * 8, 16 + j * 8), V(i * 8 + 8, 16 + j * 8 + 8)]
+    regs += [(0x00, 6 | (1 << 6)), (0x42, int(mode, 16) | (0x80 << 32))]
+    for j in range(16):
+        for i in range(16):
+            a = 16 * j + 9
+            regs += [(0x01, (a << 24) | 0xB5B5B5), V(i * 8, 16 + j * 8), V(i * 8 + 8, 16 + j * 8 + 8)]
+    packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
+elif exp.startswith("modulate"):
+    # 16x16 cells (8x8 px) at (0,16): each cell samples texel (i,j) of a 16x16 CT32 texture and is modulated (TFX=0) by a flat
+    # vertex colour that depends on (i,j); TCC=1 (texture alpha used). exp "modulate<tfx>" selects TFX (0 MODULATE, 2 HIGHLIGHT)
+    tfx = int(exp[8:] or 0)
+    img = b"".join(struct.pack("<I", (16 * i + 3) | ((16 * j + 5) << 8) | (((i * j * 3 + 17) & 255) << 16) | ((0x80 if (i + j) % 3 else 0x30) << 24))
+                   for j in range(16) for i in range(16))
+    packets += upload(DBP, 1, 0x00, 16, 16, img)
+    off = 2048 * 16
+    tex0 = DBP | (1 << 14) | (0x00 << 20) | (4 << 26) | (4 << 30) | (1 << 34) | (tfx << 35)
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, 120 | (1 << 24) | (1 << 32)), (0x47, (1 << 16) | (1 << 17)),
+            (0x06, tex0), (0x14, 0), (0x08, 5), (0x18, off | (off << 32)), (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)),
+            (0x00, 6 | (1 << 4) | (1 << 8))]
+    for j in range(16):
+        for i in range(16):
+            r, g, b, a = (16 * j + 11) & 255, (16 * i + 13) & 255, (0x90 + i * 3 + j) & 255, (0x40 + 8 * i) & 255
+            regs += [(0x01, (a << 24) | (b << 16) | (g << 8) | r),
+                     (0x03, (i * 16) | ((j * 16) << 16)), (0x05, (off + i * 128) | ((off + (16 + j * 8) * 16) << 16)),
+                     (0x03, ((i + 1) * 16) | ((j + 1) * 16 << 16)), (0x05, (off + (i * 8 + 8) * 16) | ((off + (16 + j * 8 + 8) * 16) << 16))]
+    packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
+elif exp.startswith("tri_tex"):
+    # 16x16 CT32 texture (R=16x+3, G=16y+5, B=0x40, A=0x80) mapped by two FST triangles onto the 40x40 square at (8,8) with a
+    # slight non-integer scale/shear, linear filtering ("tri_texL") or nearest ("tri_texN"), MODULATE with white (0x80)
+    lin = exp.rstrip("Q").endswith("L")
+    img = b"".join(struct.pack("<I", (16 * x + 3) | ((16 * y + 5) << 8) | (0x40 << 16) | (0x80 << 24)) for y in range(16) for x in range(16))
+    packets += upload(DBP, 1, 0x00, 16, 16, img)
+    off = 2048 * 16
+    tex0 = DBP | (1 << 14) | (4 << 26) | (4 << 30) | (1 << 34)
+    def VT(u, v, x, y): return [(0x03, u | (v << 16)), (0x05, (off + x) | ((off + y) << 16))]
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, 120 | (1 << 24) | (1 << 32)), (0x47, (1 << 16) | (1 << 17)),
+            (0x06, tex0), (0x14, (0x60 if lin else 0)), (0x08, 5), (0x18, off | (off << 32)),
+            (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)), (0x00, 3 | (1 << 4) | (1 << 8)), (0x01, 0x80808080)]
+    if "Q" in exp.upper().replace("TRI_TEX", ""):   # axis aligned, integer vertices (control)
+        x0, y0, x1, y1 = 8 * 16, 24 * 16, 48 * 16, 64 * 16
+        sk = (0, 0, 0, 0, 0)
+    else:
+        x0, y0, x1, y1 = 8 * 16 + 5, 24 * 16 + 3, 48 * 16 + 9, 64 * 16 + 11
+        sk = (7, 11, 13, 5, 0)
+    regs += VT(0, 0, x0, y0) + VT(16 * 16, 0, x1, y0 + sk[0]) + VT(0, 16 * 16, x0 + sk[1], y1)
+    regs += VT(16 * 16, 0, x1, y0 + sk[0]) + VT(16 * 16, 16 * 16, x1 + sk[2], y1 + sk[3]) + VT(0, 16 * 16, x0 + sk[1], y1)
+    packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
+elif exp == "gouraud":
+    # opaque Gouraud triangle (IIP) with distinct vertex colours, subpixel vertices: reveals the colour interpolation rounding
+    off = 2048 * 16
+    def V(x, y): return (0x05, (off + x) | ((off + y) << 16))
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, 120 | (1 << 24) | (1 << 32)), (0x47, (1 << 16) | (1 << 17)),
+            (0x18, off | (off << 32)), (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)), (0x00, 3 | (1 << 3))]
+    regs += [(0x01, 0x800010F0), V(8 * 16 + 5, 8 * 16 + 3), (0x01, 0x80F0A010), V(120 * 16 + 9, 8 * 16 + 7), (0x01, 0x8030F0C0), V(8 * 16 + 11, 120 * 16 + 13)]
+    packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
 elif exp == "tri_edge":
     # rectangle (20,20)-(40,40) as two opaque triangles, colours 0x30 (first) and 0xC0 (second): a diagonal pixel shows
     # 0xC0 if the second triangle covers it (drawn last), 0x30 if only the first does, black if neither.

@@ -166,12 +166,14 @@ public:
         }
         if (const char *lp = getenv("GT_LIST_PACKET"))   // list every primitive issued by this packet
         {
-            if (m_curPacket == static_cast<size_t>(atol(lp)))
+            unsigned la = 0, lb = 0;
+            if (sscanf(lp, "%u-%u", &la, &lb) != 2) { la = lb = static_cast<unsigned>(atol(lp)); }
+            if (m_curPacket >= la && m_curPacket <= lb)
             {
                 const GSContext &c = b.state.context;
                 printf("  [sc %u-%u,%u-%u ofs %u,%u zbp=%u zpsm=%02x]\n", c.scissor.x0, c.scissor.x1, c.scissor.y0, c.scissor.y1, c.xyoffset.ofx, c.xyoffset.ofy, c.zbuf.zbp, c.zbuf.psm);
-                printf("  prim#%llu %s ctx%d FB p=%u bw=%u psm=%02x msk=%08x | tme=%d abe=%d fst=%d iip=%d | alpha=%llx fix=%llu test=%llx | tex tbp=%u tbw=%u psm=%02x %ux%u tfx=%u tcc=%u cld=%u cbp=%u | v0=(%.1f,%.1f) v1=(%.1f,%.1f)\n",
-                       (unsigned long long)m_primIndex, b.state.prim.type == GS_PRIM_SPRITE ? "SPRITE" : b.state.prim.type == GS_PRIM_TRISTRIP ? "TSTRIP" : b.state.prim.type == GS_PRIM_TRIANGLE ? "TRI   " : "OTHER ",
+                printf("  pkt%zu prim#%llu %s ctx%d FB p=%u bw=%u psm=%02x msk=%08x | tme=%d abe=%d fst=%d iip=%d | alpha=%llx fix=%llu test=%llx | tex tbp=%u tbw=%u psm=%02x %ux%u tfx=%u tcc=%u cld=%u cbp=%u | v0=(%.1f,%.1f) v1=(%.1f,%.1f)\n",
+                       m_curPacket, (unsigned long long)m_primIndex, b.state.prim.type == GS_PRIM_SPRITE ? "SPRITE" : b.state.prim.type == GS_PRIM_TRISTRIP ? "TSTRIP" : b.state.prim.type == GS_PRIM_TRIANGLE ? "TRI   " : "OTHER ",
                        int(b.state.prim.ctxt), c.frame.fbp, c.frame.fbw, c.frame.psm, c.frame.fbmsk, int(b.state.prim.tme), int(b.state.prim.abe),
                        int(b.state.prim.fst), int(b.state.prim.iip), (unsigned long long)(c.alpha & 0xFF), (unsigned long long)((c.alpha >> 32) & 0xFF),
                        (unsigned long long)c.test, c.tex0.tbp0, c.tex0.tbw, c.tex0.psm, b.state.textureWidth, b.state.textureHeight, c.tex0.tfx,
