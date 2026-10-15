@@ -55,14 +55,14 @@ uint gsPixelIndex(uint psm, uint bp, uint bw, uint x, uint y)
     uint blockId, columnId;
     switch (psm)
     {
-    case GS_PSM_Z32: case GS_PSM_Z24: blockId = BlockTableZ32[bIdx]; columnId = ColumnTable32[cIdx]; break;
-    case GS_PSM_CT16: blockId = BlockTableC16[bIdx]; columnId = ColumnTable16[cIdx]; break;
-    case GS_PSM_CT16S: blockId = BlockTableC16S[bIdx]; columnId = ColumnTable16[cIdx]; break;
-    case GS_PSM_Z16: blockId = BlockTableZ16[bIdx]; columnId = ColumnTable16[cIdx]; break;
-    case GS_PSM_Z16S: blockId = BlockTableZ16S[bIdx]; columnId = ColumnTable16[cIdx]; break;
-    case GS_PSM_T8: blockId = BlockTableP8[bIdx]; columnId = ColumnTable8[cIdx]; break;
-    case GS_PSM_T4: blockId = BlockTableP4[bIdx]; columnId = ColumnTable4[cIdx]; break;
-    default: blockId = BlockTableC32[bIdx]; columnId = ColumnTable32[cIdx]; break;
+    case GS_PSM_Z32: case GS_PSM_Z24: blockId = gsTables[GS_OFF_BlockTableZ32 + bIdx]; columnId = gsTables[GS_OFF_ColumnTable32 + cIdx]; break;
+    case GS_PSM_CT16: blockId = gsTables[GS_OFF_BlockTableC16 + bIdx]; columnId = gsTables[GS_OFF_ColumnTable16 + cIdx]; break;
+    case GS_PSM_CT16S: blockId = gsTables[GS_OFF_BlockTableC16S + bIdx]; columnId = gsTables[GS_OFF_ColumnTable16 + cIdx]; break;
+    case GS_PSM_Z16: blockId = gsTables[GS_OFF_BlockTableZ16 + bIdx]; columnId = gsTables[GS_OFF_ColumnTable16 + cIdx]; break;
+    case GS_PSM_Z16S: blockId = gsTables[GS_OFF_BlockTableZ16S + bIdx]; columnId = gsTables[GS_OFF_ColumnTable16 + cIdx]; break;
+    case GS_PSM_T8: blockId = gsTables[GS_OFF_BlockTableP8 + bIdx]; columnId = gsTables[GS_OFF_ColumnTable8 + cIdx]; break;
+    case GS_PSM_T4: blockId = gsTables[GS_OFF_BlockTableP4 + bIdx]; columnId = gsTables[GS_OFF_ColumnTable4 + cIdx]; break;
+    default: blockId = gsTables[GS_OFF_BlockTableC32 + bIdx]; columnId = gsTables[GS_OFF_ColumnTable32 + cIdx]; break;
     }
     return page * (pageW * pageH) + (block + blockId) * ppb + columnId;
 }

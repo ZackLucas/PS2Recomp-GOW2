@@ -214,6 +214,11 @@ Observação: o upload em CPU descarta bytes de um pixel CT24 que cai na frontei
 um pacote GIF (`return` quando sobram menos de 3 bytes). A versão GPU trata a
 transferência como um fluxo contínuo, que é o comportamento do hardware.
 
+Nota técnica: as tabelas de endereçamento (~1 200 entradas) ficam num buffer
+somente-leitura (binding 15, `gs_tables_gl.h`), não em `const` do shader: o compilador
+da NVIDIA as copia para memória local a cada chamada inlinada e estourava os
+registradores assim que havia mais de uma chamada por pixel.
+
 Próximos passos, em ordem (cada um com teste contra a implementação em C++):
 1. (feito) escrita de pixel e upload de imagem.
 2. (feito) carga de CLUT (CSM1/CSM2, CPSM CT32/CT24/CT16/CT16S, CSA, CLD 0 a 7) e
@@ -224,6 +229,13 @@ Próximos passos, em ordem (cada um com teste contra a implementação em C++):
    CPU: é controle de fluxo. A versão GPU reproduz as peculiaridades do modelo em
    CPU (ex.: T8 com CT32 e CSA != 0 carrega a partir de CSA sem deslocar); se o
    PCSX2 divergir ali, corrigimos os dois lados com teste.
-3. Fragment shader com ordenação por pixel (`ARB_fragment_shader_interlock`): função
+3a. (feito) pipeline de pixel isolado: `shaders/gs_pixel.glsl` (`gsWritePixel`):
+   scissor, fog, teste de alfa e AFAIL, DATE/DATM, teste de Z (ZTST), blend a/b/c/d
+   com FIX, PABE, FBA, FBMSK, escritas de FB e Z nos 8 formatos de frame. Espelha
+   o `WritePixel` do CPU, inclusive as simplificações (sem COLCLAMP nem dither).
+   `gow2_gs_pixel_test`: 72 000 escritas aleatórias em sequência contra
+   `GSCpuBackend::Submit(POINT)`, VRAM inteira comparada, 0 divergências; 5 de 6
+   mutações detectadas (a 6a é equivalente: o fog nunca passa de 254).
+3b. Rasterização e fragment shader com ordenação por pixel (`ARB_fragment_shader_interlock`): função
    de textura, filtro, teste de alfa, teste de profundidade, blend a/b/c/d, máscaras.
 4. Replay do frame do menu e comparação com a VRAM do GS em CPU e com o PCSX2.

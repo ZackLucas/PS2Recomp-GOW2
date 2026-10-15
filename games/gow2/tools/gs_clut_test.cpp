@@ -1,5 +1,5 @@
 // gow2_gs_clut_test: GPU CLUT load + palette lookup vs GSCpuBackend (LoadClut + LookupCLUT).
-#include "gl_context.h"
+#include "gs_tables_gl.h"
 #include "runtime/gs/gs_cpu_backend.h"
 #include "runtime/gs/ps2_gs_memory.h"
 
@@ -26,6 +26,7 @@ int main()
     if (!gl::initContext()) { fprintf(stderr, "no GL context\n"); return 1; }
     printf("GL_RENDERER: %s\n", glGetString(GL_RENDERER));
     GSMem::InitLookupTables();
+    gl::bindGsTables();
     const std::string dir = GOW2_SHADER_DIR;
     const std::string vramSrc = slurp(dir + "/gs_vram_tables.glsl") + slurp(dir + "/gs_vram.glsl");
 

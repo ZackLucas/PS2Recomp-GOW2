@@ -1,6 +1,6 @@
 // gow2_gs_addr_test: checks the GLSL VRAM addressing (shaders/gs_vram.glsl) against the runtime's
 // C++ implementation (GSMem::Read*) on millions of random reads, for every pixel storage mode.
-#include "gl_context.h"
+#include "gs_tables_gl.h"
 #include "runtime/gs/ps2_gs_memory.h"
 
 #include <cstdint>
@@ -47,6 +47,7 @@ int main()
     if (!gl::initContext()) { fprintf(stderr, "no GL context\n"); return 1; }
     printf("GL_RENDERER: %s\n", glGetString(GL_RENDERER));
     GSMem::InitLookupTables();
+    gl::bindGsTables();
 
     const std::string dir = GOW2_SHADER_DIR;
     const std::string src = "#version 450\nlayout(local_size_x = 256) in;\n"

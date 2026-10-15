@@ -1,6 +1,6 @@
 // gow2_gs_upload_test: GPU image upload (shaders/gs_upload.glsl) vs GSCpuBackend::UploadImage.
 // Random host->local transfers for every destination storage mode; the whole 4 MiB VRAM is compared.
-#include "gl_context.h"
+#include "gs_tables_gl.h"
 #include "runtime/gs/gs_cpu_backend.h"
 #include "runtime/gs/ps2_gs_memory.h"
 
@@ -37,6 +37,7 @@ int main()
     if (!gl::initContext()) { fprintf(stderr, "no GL context\n"); return 1; }
     printf("GL_RENDERER: %s\n", glGetString(GL_RENDERER));
     GSMem::InitLookupTables();
+    gl::bindGsTables();
 
     const std::string dir = GOW2_SHADER_DIR;
     std::string upload = slurp(dir + "/gs_upload.glsl");
