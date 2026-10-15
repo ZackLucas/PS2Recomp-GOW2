@@ -369,19 +369,17 @@ com teste de Z GEQUAL, escala 2x exata da janela):
 Com as duas, um plano com gradiente nos dois eixos fica idêntico ao PCSX2 em 957/1069 amostras (±1 no resto, aritmética
 de ponto fixo). No quadro real, o erro do buffer p=152 (Z-buffer, zbp=120) após o pacote 22 caiu de 6.9 para 3.8.
 
-O patch está em `games/gow2/patches/gs-pixel-center-and-z-trunc.patch` (CPU + shader). **Não aplicado** porque
-3 testes unitários do runtime codificam a convenção antiga (STQ S=0.75/Q=1.375, filtro linear STQ e
-"triangle fan quad sem buracos"); é preciso rever cada um contra o PCSX2 antes de aplicar.
+**Aplicado** em `gs_cpu_backend.cpp` e `gs_draw.frag`. Três testes unitários codificavam a convenção antiga e
+foram revistos: STQ (S/Q) e filtro linear STQ agora sondam o pixel que corresponde ao ponto de amostra inteiro
+(valores recalculados à mão), e o teste do "fan quad sem buracos" lia a VRAM CT32 de forma linear (bug do teste,
+passava por acaso com a área toda preenchida): agora lê por `gs.ReadVram`. ps2x_tests 438/438 e gow2_gs_*_test
+PASS; GPU==CPU no menu continua com as mesmas 10 words explicadas.
 Ferramentas novas: `GT_LIST_XFER`, `GT_VRAM_PACKETS`, scissor/offset em `GT_LIST_PACKET`; experimentos
 `z_tri`, `z_flat`, `z_iso<k>`, `z_isoy<k>`, `z_plane2_<gx>_<gy>`, `z_planex<g>`, `z24_upload` em gsdump_synth.py.
 Armadilha: TBP0 da textura é em blocos (página = 32 blocos); ZBP/FBP são em páginas.
 
 ### Próximos passos (em ordem)
-1. Rever os 3 testes unitários que codificam a convenção antiga (`ps2_gs_tests.cpp`: STQ S=0,75/Q=1,375;
-   filtro linear STQ; "triangle fan subpixel quad sem buracos", linha ~3808) contra a semântica do PCSX2,
-   atualizá-los e aplicar o patch. Rodar `gow2_gs_*_test` e `ps2x_tests` (438).
-2. Repetir `trunc_bisect.py` com `TB_BLIT=152,4,1 TB_WH=256,256` nos cortes 22, 200 e 1212 e o erro do quadro
-   inteiro (era ~12). Hoje: 3,8 / 5,3 / 21,7 com o patch.
-3. Achar o resíduo: ~+4 no byte baixo do Z em prims reais (suspeitos: ponto fixo do plano, regra de borda
-   top-left com amostras inteiras, regra dos sprites).
-4. Só então otimizar os desenhos da GPU (~12 ms/quadro) e ligar o `GpuGsExecutor` ao `ps2EntryRunner`.
+1. Medir de novo o erro do quadro contra o PCSX2 (era ~12) e a bisseção `p=152` (cortes 22, 200, 1212).
+2. Achar o resíduo (~+4 no byte baixo do Z em prims reais: ponto fixo do plano, borda top-left com amostras
+   inteiras, regra dos sprites).
+3. Só então otimizar os desenhos da GPU (~12 ms/quadro) e ligar o `GpuGsExecutor` ao `ps2EntryRunner`.

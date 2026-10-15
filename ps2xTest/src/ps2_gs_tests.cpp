@@ -3419,9 +3419,9 @@ void register_ps2_gs_tests()
                 constexpr uint64_t kZbuf = (1ull << 32);
                 constexpr uint64_t kScissor =
                     (0ull << 0) |
-                    (4ull << 16) |
+                    (8ull << 16) |
                     (0ull << 32) |
-                    (4ull << 48);
+                    (8ull << 48);
                 constexpr uint64_t kTex0 =
                     (static_cast<uint64_t>(kTexTbp) << 0) |
                     (1ull << 14) |
@@ -3472,11 +3472,13 @@ void register_ps2_gs_tests()
                 gs.writeRegister(GS_REG_ST, packSt(0.0f, 0.0f));
                 gs.writeRegister(GS_REG_XYZ2, 0ull);
                 gs.writeRegister(GS_REG_ST, packSt(1.0f, 0.0f));
-                gs.writeRegister(GS_REG_XYZ2, (64ull << 0) | (0ull << 16));
+                gs.writeRegister(GS_REG_XYZ2, (128ull << 0) | (0ull << 16));
                 gs.writeRegister(GS_REG_ST, packSt(0.0f, 0.0f));
-                gs.writeRegister(GS_REG_XYZ2, (0ull << 0) | (64ull << 16));
+                gs.writeRegister(GS_REG_XYZ2, (0ull << 0) | (128ull << 16));
 
-                return readReferencePSMCT32Pixel(vram, 0u, 1u, 1u, 1u);
+                // The GS samples at integer pixel coordinates: S = 3/8 -> u = 0.75, so texel 0 for nearest and a
+                // 25% blend towards texel 1 for linear.
+                return readReferencePSMCT32Pixel(vram, 0u, 1u, 3u, 1u);
             };
 
             constexpr uint64_t kTex1Linear =
@@ -3646,9 +3648,9 @@ void register_ps2_gs_tests()
             gs.writeRegister(GS_REG_XYZ2, (64ull << 16));
 
             const uint32_t pixel =
-                readReferencePSMCT32Pixel(vram, 0u, 1u, 1u, 1u);
+                readReferencePSMCT32Pixel(vram, 0u, 1u, 2u, 1u);
             t.Equals(pixel, kHomogeneousTexel,
-                     "the DDA should interpolate S=0.75 and Q=1.375, selecting texel 2 after S/Q");
+                     "the DDA should interpolate S=1.0 and Q=1.5 at pixel (2,1) (integer sample point), selecting texel 2 after S/Q");
         });
 
         tc.Run("GS alpha-test AFAIL independently masks framebuffer and depth", [](TestCase &t)
@@ -3854,9 +3856,8 @@ void register_ps2_gs_tests()
                 int last = -1;
                 for (uint32_t x = 6u; x <= 26u; ++x)
                 {
-                    const size_t offset = (static_cast<size_t>(y) * 64u + static_cast<size_t>(x)) * 4u;
-                    uint32_t pixel = 0u;
-                    std::memcpy(&pixel, vram.data() + offset, sizeof(pixel));
+                    // CT32 lives in the GS page/block swizzle: read it through the VRAM accessor.
+                    const uint32_t pixel = gs.ReadVram(GS_PSM_CT32, 0u, 1u, x, y);
                     if ((pixel & 0x00FFFFFFu) != 0u)
                     {
                         if (first < 0)
@@ -3875,9 +3876,7 @@ void register_ps2_gs_tests()
                 sawFilledRow = true;
                 for (int x = first; x <= last; ++x)
                 {
-                    const size_t offset = (static_cast<size_t>(y) * 64u + static_cast<size_t>(x)) * 4u;
-                    uint32_t pixel = 0u;
-                    std::memcpy(&pixel, vram.data() + offset, sizeof(pixel));
+                    const uint32_t pixel = gs.ReadVram(GS_PSM_CT32, 0u, 1u, static_cast<uint32_t>(x), y);
                     if ((pixel & 0x00FFFFFFu) == 0u)
                     {
                         t.Fail("triangle fan quad should not leave interior holes within a covered row");

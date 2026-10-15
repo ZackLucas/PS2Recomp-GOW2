@@ -37,7 +37,7 @@ void main()
         if (abs(denom) < 0.001) discard;
         const float winding = (denom < 0.0) ? -1.0 : 1.0;
         precise float invAbsDenom = gsDiv(1.0, abs(denom));
-        precise float px = float(x) + 0.5, py = float(y) + 0.5;
+        precise float px = float(x), py = float(y);
         precise float w0 = (((fy1 - fy2) * (px - fx2) + (fx2 - fx1) * (py - fy2)) * winding) * invAbsDenom;
         precise float w1 = (((fy2 - fy0) * (px - fx2) + (fx0 - fx2) * (py - fy2)) * winding) * invAbsDenom;
         precise float w2 = 1.0 - w0 - w1;
@@ -45,7 +45,7 @@ void main()
         if (w0 < -eps || w1 < -eps || w2 < -eps) discard;
 
         precise double zd = v0.z * double(w0) + v1.z * double(w1) + v2.z * double(w2);
-        z = uint(zd + 0.5lf);
+        z = uint(zd);
 
         if ((flags & F_IIP) != 0u)
         {
