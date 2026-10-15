@@ -15,7 +15,7 @@ void main()
     const Vtx v0 = prims[id].v[0], v1 = prims[id].v[1], v2 = prims[id].v[2];
 
     uint r, g, b, a, fog, z;
-    float is = 0.0, it = 0.0, iq = 1.0;
+    precise float is = 0.0, it = 0.0, iq = 1.0;
     uint iu = 0u, iv = 0u;
     TexState ts;
     ts.tbp0 = pu(id, H_TBP0); ts.tbw = pu(id, H_TBW); ts.psm = pu(id, H_TPSM); ts.w = pu(id, H_TW); ts.h = pu(id, H_TH);
@@ -88,40 +88,43 @@ void main()
     }
     else if (type == PRIM_SPRITE)
     {
-        int x0 = int(v0.x) - ofx, y0 = int(v0.y) - ofy, x1 = int(v1.x) - ofx, y1 = int(v1.y) - ofy;
-        if (x0 > x1) { const int t = x0; x0 = x1; x1 = t; }
-        if (y0 > y1) { const int t = y0; y0 = y1; y1 = t; }
-        const int spanX = max(1, x1 - x0), spanY = max(1, y1 - y0);
+        // Mirrors GSCpuBackend::DrawSprite (PCSX2 rasterizer): per-axis ordered corners, 16.16 truncated UV step.
+        float px0 = v0.x - float(ofx), py0 = v0.y - float(ofy), px1 = v1.x - float(ofx), py1 = v1.y - float(ofy);
+        float tu0, tv0, tu1, tv1;
+        if (ts.fst != 0u)
+        {
+            tu0 = float(v0.uv & 0xFFFFu); tv0 = float(v0.uv >> 16u);
+            tu1 = float(v1.uv & 0xFFFFu); tv1 = float(v1.uv >> 16u);
+        }
+        else
+        {
+            const float q0 = (abs(v0.q) > 1.0e-8) ? v0.q : 1.0, q1 = (abs(v1.q) > 1.0e-8) ? v1.q : 1.0;
+            tu0 = gsDiv(v0.s, q0) * float(ts.w) * 16.0; tv0 = gsDiv(v0.t, q0) * float(ts.h) * 16.0;
+            tu1 = gsDiv(v1.s, q1) * float(ts.w) * 16.0; tv1 = gsDiv(v1.t, q1) * float(ts.h) * 16.0;
+        }
+        if (px0 > px1) { float t = px0; px0 = px1; px1 = t; t = tu0; tu0 = tu1; tu1 = t; }
+        if (py0 > py1) { float t = py0; py0 = py1; py1 = t; t = tv0; tv0 = tv1; tv1 = t; }
         r = v1.rgba & 0xFFu; g = (v1.rgba >> 8u) & 0xFFu; b = (v1.rgba >> 16u) & 0xFFu; a = v1.rgba >> 24u;
         z = uint(v1.z);
         fog = v1.fog;
         if (tme)
         {
-            float u0f, v0f, u1f, v1f;
+            const ivec4 bnd = gsPrimBounds(id);
+            const int left = bnd.x, top = bnd.y;
+            const double dx = double(px1 - px0), dy = double(py1 - py0);
+            const double du = (dx != 0.0lf) ? trunc((double(tu1) - double(tu0)) * 65536.0lf / dx) : 0.0lf;
+            const double dv = (dy != 0.0lf) ? trunc((double(tv1) - double(tv0)) * 65536.0lf / dy) : 0.0lf;
+            const double startU = trunc(double(tu0)) * 65536.0lf + trunc(du * double(float(left) - px0)) + 2.0lf;
+            const double startV = trunc(double(tv0)) * 65536.0lf + trunc(dv * double(float(top) - py0)) + 3.0lf;
+            const int fixedU = int(floor((startU + du * double(x - left)) / 65536.0lf));
+            const int fixedV = int(floor((startV + dv * double(y - top)) / 65536.0lf));
             if (ts.fst != 0u)
             {
-                u0f = float((v0.uv & 0xFFFFu) >> 4u); v0f = float((v0.uv >> 16u) >> 4u);
-                u1f = float((v1.uv & 0xFFFFu) >> 4u); v1f = float((v1.uv >> 16u) >> 4u);
-            }
-            else
-            {
-                const float q0 = (abs(v0.q) > 1.0e-8) ? v0.q : 1.0, q1 = (abs(v1.q) > 1.0e-8) ? v1.q : 1.0;
-                u0f = gsDiv(v0.s, q0) * float(ts.w); v0f = gsDiv(v0.t, q0) * float(ts.h);
-                u1f = gsDiv(v1.s, q1) * float(ts.w); v1f = gsDiv(v1.t, q1) * float(ts.h);
-            }
-            precise float spriteW = max(float(spanX), 1.0), spriteH = max(float(spanY), 1.0);
-            precise float ty = gsDiv(float(y - y0), spriteH);
-            precise float tx = gsDiv(float(x - x0), spriteW);
-            precise float texVf = v0f + (v1f - v0f) * ty;
-            precise float texUf = u0f + (u1f - u0f) * tx;
-            if (ts.fst != 0u)
-            {
-                const int fixedU = int(texUf * 16.0 + 0.5), fixedV = int(texVf * 16.0 + 0.5);
                 iu = uint(clamp(fixedU, 0, 0xFFFF)); iv = uint(clamp(fixedV, 0, 0xFFFF));
             }
             else
             {
-                is = gsDiv(texUf, float(ts.w)); it = gsDiv(texVf, float(ts.h)); iq = 1.0;
+                is = gsDiv(gsDiv(float(fixedU), 16.0), float(ts.w)); it = gsDiv(gsDiv(float(fixedV), 16.0), float(ts.h)); iq = 1.0;
             }
         }
     }

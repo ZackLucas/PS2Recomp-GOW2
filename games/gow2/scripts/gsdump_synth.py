@@ -167,6 +167,40 @@ elif exp == "tri_edge":
     regs += [(0x01, 0x80303030), V(20, 20), V(40, 20), V(20, 40)]
     regs += [(0x01, 0x80C0C0C0), V(40, 20), V(40, 40), V(20, 40)]
     packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
+elif exp == "spr_min":
+    # like real prim #7222: 256x256 CT24 texture minified by a 16x128 LINEAR sprite, UV (0,0)-(512,4096)
+    img = bytes(rnd.randrange(256) for _ in range(256 * 256 * 3))
+    packets += upload(DBP, 4, 0x01, 256, 256, img)
+    off = 2048 * 16
+    tex0 = DBP | (4 << 14) | (0x01 << 20) | (8 << 26) | (8 << 30) | (1 << 34)
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, 120 | (1 << 24) | (1 << 32)), (0x47, (1 << 16) | (1 << 17)),
+            (0x06, tex0), (0x14, 0x60), (0x08, 5), (0x18, off | (off << 32)), (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)),
+            (0x00, 6 | (1 << 4) | (1 << 8)), (0x01, 0x80808080),
+            (0x03, 0), (0x05, off | (off << 16)), (0x03, 512 | (4096 << 16)), (0x05, (off + 16 * 16) | ((off + 128 * 16) << 16))]
+    packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
+elif exp == "spr_zero":
+    # degenerate sprites: identical vertices at integer (20,20), at a fractional (30.5,20.5), one-pixel wide (40..41), 0.5 wide (50..50.5)
+    off = 2048 * 16
+    def V(x, y): return (0x05, (off + int(x * 16)) | ((off + int(y * 16)) << 16))
+    regs = [(0x4C, 232 | (8 << 16) | (1 << 24)), (0x4E, 120 | (1 << 24) | (1 << 32)), (0x47, (1 << 16) | (1 << 17)),
+            (0x18, off | (off << 32)), (0x40, 0 | (511 << 16) | (0 << 32) | (447 << 48)), (0x00, 6), (0x01, 0x80FFFFFF)]
+    for (xa, ya, xb, yb) in ((20, 20, 20, 20), (30.5, 20.5, 30.5, 20.5), (40, 20, 41, 21), (50, 20, 50.5, 20.5), (60.25, 20.25, 60.75, 20.75)):
+        regs += [V(xa, ya), V(xb, yb)]
+    packets += transfer(tag(len(regs), 0, 1, 0xE) + ad(*regs))
+elif exp.startswith("spr_ramp"):
+    # ramp texture R=16*x (0..240), G=16*y; LINEAR sprite stretched to NxN: R of the output reveals the fixed-point U (R = U - 8)
+    n = int(exp[8:] or 48)
+    img = b"".join(struct.pack("<I", (16 * x) | ((16 * y) << 8) | (0x40 << 16) | (0x80 << 24)) for y in range(16) for x in range(16))
+    packets += upload(DBP, 1, 0x00, 16, 16, img)
+    packets += draw(DBP, 1, 0x00, 4, 4, 16, 16, nearest=False, sw=n, sh=n, sx=8, sy=16)
+elif exp.startswith("spr_lin"):
+    # 16x16 pseudo-random CT32 texture stretched by a LINEAR sprite to NxN (spr_lin<N>, e.g. spr_lin48 = 3x, spr_lin40 = 2.5x)
+    n = int(exp[7:] or 48)
+    img = bytes(rnd.randrange(256) for _ in range(16 * 16 * 4))
+    img = bytearray(img)
+    for i in range(3, len(img), 4): img[i] = 0x80
+    packets += upload(DBP, 1, 0x00, 16, 16, bytes(img))
+    packets += draw(DBP, 1, 0x00, 4, 4, 16, 16, nearest=False, sw=n, sh=n, sx=8, sy=16)
 elif exp in ("spr_up_nearest", "spr_up_linear"):
     # 16x16 CT32 gradient (R=16*x, G=16*y, B=0x40) stretched by a sprite to 32x32 at (8,8): shows the sprite UV rule
     img = b"".join(struct.pack("<I", (16 * x) | ((16 * y) << 8) | (0x40 << 16) | (0x80 << 24)) for y in range(16) for x in range(16))

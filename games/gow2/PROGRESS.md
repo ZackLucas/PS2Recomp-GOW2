@@ -426,9 +426,34 @@ Cadeia do bloom (erro por etapa, exato): `p=152` 1186 **0,6**; `p=120` 1188 **0,
 1194 2,8; 1208 **6,8** (2,4% >8); 1210 7,0; 1212 7,8 (37% >8). O erro cresce passada a passada; salto grande entre
 1194 e 1208. O composite (1216) herda isso.
 
+### Defeito do bloom resolvido (2026-10-15, madrugada)
+A cadeia de blur estava errada por três detalhes de **sprite com filtro bilinear**, todos medidos com sondas de rampa
+(`spr_ramp<N>`, textura R=16·x: o R de saída revela o UV em ponto fixo):
+
+1. **Pesos do bilinear de 4 bits, truncando em cada etapa, horizontal primeiro**: `top = c00 + ((c10-c00)*wx >> 4)`,
+   `bottom` igual, `out = top + ((bottom-top)*wy >> 4)`. Antes: float com `lround` (erro de até 2 níveis por passada,
+   acumulando ao longo de ~15 passadas ping-pong).
+2. **Passo de UV do sprite em 16.16 truncado**: `du = trunc(Δuv·65536/Δx)`, valor no pixel `(u0·65536 + du·(pixel−p0) + 2) >> 16`
+   (V usa +3), com prestep a partir da posição fracionária do vértice. 197/198 amostras idênticas em tamanhos 24..64.
+3. **Cobertura do sprite por `ceil(p0)..ceil(p1)` exclusivo** e cantos ordenados por eixo junto com o UV; sprite de tamanho zero
+   não desenha nada (confirmado no PCSX2, sonda `spr_zero`). Cinco testes antigos assumiam 1 pixel e foram corrigidos.
+
+Também: o CPU lia o que acabara de escrever quando a textura se sobrepõe ao destino (auto-realimentação); agora usa
+um instantâneo pré-desenho (como o PCSX2 e a GPU). Isso baixou as divergências CPU×GPU no menu de ~110 mil para ~6 mil words;
+o resto são sprites sequenciais que leem vizinhos escritos pela primitiva anterior no mesmo lote da GPU (pendente).
+
+Medido contra o PCSX2 (região 512x214, erro médio abs por canal / % de pixels >8):
+
+| corte | início do dia | agora |
+|---|---|---|
+| 1212 cena antes do composite | 0,75 | 0,8 |
+| bloom `p=152` em 1212 | 7,8 (37% >8) | 0,6 (0,01% >8) |
+| 1216 após o composite | 7,0 (60% >8) | 1,4–1,6 (0,24% >8) |
+| 1321 fim do quadro | 3,5 (0,6% >8) | 0,8 (0,5% >8) |
+
 ### Próximos passos
-1. Listar com `GT_LIST_PACKET=1195-1208` os sprites entre 1194 e 1208 e sondar o que eles têm de diferente
-   (blend `alpha=64` = (Cs-Cd)*FIX>>7+Cd, `FBMSK=ff000000`, teste `31001` NEVER/FB_ONLY, leitura e escrita no mesmo
-   buffer p=152 no 1212: auto-realimentação, ordem de leitura).
-2. Investigar por que o PCSX2 filtra linearmente triângulos com TEX1=0 (sondas `tri_texN`), mas não sprites.
-3. Depois: otimizar a GPU e ligar o `GpuGsExecutor` ao runtime.
+1. Pesos exatos do bilinear em triângulos e a peculiaridade do PCSX2 filtrar triângulos com TEX1=0 (sonda `tri_texN`).
+2. Gouraud ±1 em 3% dos pixels (aritmética de ponto fixo do PCSX2 na interpolação de cor).
+3. Metade de baixo do quadro (a janela só mostra ~214 linhas em modo progressivo): validar por outra via.
+4. Auto-realimentação na GPU: instantâneo da textura (cópia do buffer) para primitivas que leem o próprio destino.
+5. Depois: otimizar a GPU (~12 ms/quadro) e ligar o `GpuGsExecutor` ao `ps2EntryRunner`.

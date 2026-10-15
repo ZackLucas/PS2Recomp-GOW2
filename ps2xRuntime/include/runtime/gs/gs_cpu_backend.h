@@ -76,6 +76,10 @@ private:
     std::array<uint16_t, 512> m_clut{};
     std::array<uint32_t, 2> m_clutCbp{};
     GSMem::TexturePageCache m_texturePageCache;
+    // Texture reads come from here: the live VRAM, or a pre-draw copy while a primitive samples memory it also writes
+    // (the GS and PCSX2 read the texels as they were before the draw; reading fresh writes would diverge).
+    const uint8_t *m_texVram = nullptr;
+    std::vector<uint8_t> m_texSnapshot;
 
     GSTransferCommand m_transfer{};
     GSTransferSnapshot m_transferState{};

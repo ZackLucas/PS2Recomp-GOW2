@@ -260,7 +260,30 @@ public:
         const auto t0 = Clock::now();
         m_gpu.submit(b);
         m_gpuMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        if (m_cpuOn && !m_firstDiffDone && getenv("GT_FIRSTDIFF"))   // report the first primitive after which CPU and GPU VRAM differ
+        {
+            std::vector<uint8_t> g(PS2_GS_VRAM_SIZE);
+            m_gpu.readVram(g.data());
+            const uint32_t *a = reinterpret_cast<const uint32_t *>(m_vramPtr), *c = reinterpret_cast<const uint32_t *>(g.data());
+            for (size_t i = 0; i < PS2_GS_VRAM_SIZE / 4; ++i)
+                if (a[i] != c[i])
+                {
+                    const GSContext &cx = b.state.context;
+                    printf("  [firstdiff] after prim#%llu (packet %zu) type=%d vc=%d: word %zu cpu=%08x gpu=%08x | FB p=%u bw=%u psm=%02x msk=%08x | tme=%d fst=%d abe=%d iip=%d lin=%d test=%llx alpha=%llx | tex tbp=%u tbw=%u psm=%02x %ux%u tfx=%u tcc=%u\n",
+                           (unsigned long long)(m_primIndex - 1), m_curPacket, int(b.state.prim.type), int(b.vertexCount), i, a[i], c[i],
+                           cx.frame.fbp, cx.frame.fbw, cx.frame.psm, cx.frame.fbmsk, int(b.state.prim.tme), int(b.state.prim.fst), int(b.state.prim.abe),
+                           int(b.state.prim.iip), int(b.state.linearFilter), (unsigned long long)cx.test, (unsigned long long)cx.alpha,
+                           cx.tex0.tbp0, cx.tex0.tbw, cx.tex0.psm, b.state.textureWidth, b.state.textureHeight, cx.tex0.tfx, cx.tex0.tcc);
+                    for (int v = 0; v < b.vertexCount; ++v)
+                        printf("      v%d x=%.4f y=%.4f z=%.0f rgba=%u,%u,%u,%u s=%g t=%g q=%g uv=%u,%u\n", v, b.vertices[v].x, b.vertices[v].y,
+                               b.vertices[v].z, b.vertices[v].r, b.vertices[v].g, b.vertices[v].b, b.vertices[v].a, b.vertices[v].s,
+                               b.vertices[v].t, b.vertices[v].q, b.vertices[v].u, b.vertices[v].v);
+                    m_firstDiffDone = true;
+                    break;
+                }
+        }
     }
+    bool m_firstDiffDone = false;
     void LoadClut(const GSTex0Reg &t, const GSTexClutReg &c) override
     {
         if (m_cpuOn) m_cpu.LoadClut(t, c);

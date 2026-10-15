@@ -1002,7 +1002,7 @@ void register_ps2_gs_tests()
             gs.writeRegister(GS_REG_UV, kUvRow1);
             gs.writeRegister(GS_REG_XYZ2, 0ull);
             gs.writeRegister(GS_REG_UV, kUvRow1);
-            gs.writeRegister(GS_REG_XYZ2, 0ull);
+            gs.writeRegister(GS_REG_XYZ2, (16ull) | (16ull << 16)); // sprites cover [p0, p1): the second corner is one pixel away
 
             const uint32_t dstPixel = readReferenceFramePSMCT32Pixel(vram, 150u, 1u, 0u, 0u);
             t.Equals(dstPixel, static_cast<uint32_t>(kSourceColor),
@@ -2653,7 +2653,7 @@ void register_ps2_gs_tests()
             gs.writeRegister(GS_REG_UV, 0ull);
             gs.writeRegister(GS_REG_XYZ2, 0ull);
             gs.writeRegister(GS_REG_UV, 0ull);
-            gs.writeRegister(GS_REG_XYZ2, 0ull);
+            gs.writeRegister(GS_REG_XYZ2, (16ull) | (16ull << 16)); // sprites cover [p0, p1): the second corner is one pixel away
 
             uint32_t pixel = 0u;
             std::memcpy(&pixel, vram.data(), sizeof(pixel));
@@ -2798,7 +2798,7 @@ void register_ps2_gs_tests()
             gs.writeRegister(GS_REG_UV, 0ull);
             gs.writeRegister(GS_REG_XYZ2, 0ull);
             gs.writeRegister(GS_REG_UV, 0ull);
-            gs.writeRegister(GS_REG_XYZ2, 0ull);
+            gs.writeRegister(GS_REG_XYZ2, (16ull) | (16ull << 16)); // sprites cover [p0, p1): the second corner is one pixel away
 
             uint32_t pixel = 0u;
             std::memcpy(&pixel, vram.data(), sizeof(pixel));
@@ -2860,7 +2860,7 @@ void register_ps2_gs_tests()
             gs.writeRegister(GS_REG_UV, 0ull);
             gs.writeRegister(GS_REG_XYZ2, 0ull);
             gs.writeRegister(GS_REG_UV, 0ull);
-            gs.writeRegister(GS_REG_XYZ2, 0ull);
+            gs.writeRegister(GS_REG_XYZ2, (16ull) | (16ull << 16)); // sprites cover [p0, p1): the second corner is one pixel away
 
             uint32_t pixel = 0u;
             std::memcpy(&pixel, vram.data(), sizeof(pixel));
@@ -2926,7 +2926,7 @@ void register_ps2_gs_tests()
             gs.writeRegister(GS_REG_UV, 0ull);
             gs.writeRegister(GS_REG_XYZ2, 0ull);
             gs.writeRegister(GS_REG_UV, 0ull);
-            gs.writeRegister(GS_REG_XYZ2, 0ull);
+            gs.writeRegister(GS_REG_XYZ2, (16ull) | (16ull << 16)); // sprites cover [p0, p1): the second corner is one pixel away
 
             uint32_t pixel = 0u;
             std::memcpy(&pixel, vram.data(), sizeof(pixel));
@@ -4479,7 +4479,7 @@ void register_ps2_gs_tests()
             gs.writeRegister(GS_REG_UV, 0ull);
             gs.writeRegister(GS_REG_XYZ2, 0ull);
             gs.writeRegister(GS_REG_UV, 0ull);
-            gs.writeRegister(GS_REG_XYZ2, 0ull);
+            gs.writeRegister(GS_REG_XYZ2, (16ull) | (16ull << 16)); // sprites cover [p0, p1): the second corner is one pixel away
 
             uint32_t pixelHL = 0u;
             std::memcpy(&pixelHL, vram.data(), sizeof(pixelHL));
@@ -4502,7 +4502,7 @@ void register_ps2_gs_tests()
             gs.writeRegister(GS_REG_UV, 0ull);
             gs.writeRegister(GS_REG_XYZ2, 0ull);
             gs.writeRegister(GS_REG_UV, 0ull);
-            gs.writeRegister(GS_REG_XYZ2, 0ull);
+            gs.writeRegister(GS_REG_XYZ2, (16ull) | (16ull << 16)); // sprites cover [p0, p1): the second corner is one pixel away
 
             uint32_t pixelHH = 0u;
             std::memcpy(&pixelHH, vram.data(), sizeof(pixelHH));

@@ -39,15 +39,16 @@ uint gsSamplePoint(const TexState t, int u, int v)
 
 uint gsLerpChannel(uint c00, uint c10, uint c01, uint c11, float fx, float fy)
 {
-    precise float top = float(c00) + (float(c10) - float(c00)) * fx;
-    precise float bottom = float(c01) + (float(c11) - float(c01)) * fx;
-    precise float v = top + (bottom - top) * fy;
-    return uint(clamp(int(floor(v + 0.5)), 0, 255));
+    // 4-bit weights, truncation at each stage (mirrors GSCpuBackend lerpChannel)
+    const int wx = clamp(int(fx * 16.0), 0, 15), wy = clamp(int(fy * 16.0), 0, 15);
+    const int top = int(c00) + (((int(c10) - int(c00)) * wx) >> 4);
+    const int bottom = int(c01) + (((int(c11) - int(c01)) * wx) >> 4);
+    return uint(clamp(top + (((bottom - top) * wy) >> 4), 0, 255));
 }
 
 uint gsSampleTexture(const TexState t, float s, float tt, float q, uint u, uint v)
 {
-    float texUf, texVf;
+    precise float texUf, texVf;
     if (t.fst != 0u)
     {
         texUf = float(u) / 16.0;
@@ -56,7 +57,7 @@ uint gsSampleTexture(const TexState t, float s, float tt, float q, uint u, uint 
     else
     {
         const float qq = (abs(q) > 1.0e-8) ? q : 1.0;
-        const float invQ = gsDiv(1.0, qq);
+        precise float invQ = gsDiv(1.0, qq);
         texUf = s * invQ * float(t.w);
         texVf = tt * invQ * float(t.h);
     }
@@ -64,9 +65,9 @@ uint gsSampleTexture(const TexState t, float s, float tt, float q, uint u, uint 
     if (t.linear == 0u)
         return gsSamplePoint(t, int(texUf), int(texVf));
 
-    const float su = texUf - 0.5, sv = texVf - 0.5;
+    precise float su = texUf - 0.5, sv = texVf - 0.5;
     const int u0 = int(floor(su)), v0 = int(floor(sv));
-    const float fx = su - float(u0), fy = sv - float(v0);
+    precise float fx = su - float(u0), fy = sv - float(v0);
     const uint c00 = gsSamplePoint(t, u0, v0), c10 = gsSamplePoint(t, u0 + 1, v0);
     const uint c01 = gsSamplePoint(t, u0, v0 + 1), c11 = gsSamplePoint(t, u0 + 1, v0 + 1);
     const uint r = gsLerpChannel(c00 & 0xFFu, c10 & 0xFFu, c01 & 0xFFu, c11 & 0xFFu, fx, fy);

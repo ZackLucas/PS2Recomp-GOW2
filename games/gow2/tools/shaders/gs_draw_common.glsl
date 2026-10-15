@@ -57,12 +57,14 @@ ivec4 gsPrimBounds(uint id)
     }
     if (type == PRIM_SPRITE)
     {
-        int x0 = int(a.x) - ofx, y0 = int(a.y) - ofy, x1 = int(b.x) - ofx, y1 = int(b.y) - ofy;
-        if (x0 > x1) { const int t = x0; x0 = x1; x1 = t; }
-        if (y0 > y1) { const int t = y0; y0 = y1; y1 = t; }
-        const int ux1 = x0 + max(1, x1 - x0) - 1, uy1 = y0 + max(1, y1 - y0) - 1;
-        if (ux1 < sx0 || x0 > sx1 || uy1 < sy0 || y0 > sy1) return ivec4(1, 1, 0, 0);
-        return ivec4(clamp(x0, sx0, sx1), clamp(y0, sy0, sy1), clamp(ux1, sx0, sx1), clamp(uy1, sy0, sy1));
+        // PCSX2 rasterizer: corners ordered per axis, pixels from ceil(p0) to ceil(p1) exclusive, clipped to the scissor
+        float px0 = a.x - float(ofx), py0 = a.y - float(ofy), px1 = b.x - float(ofx), py1 = b.y - float(ofy);
+        if (px0 > px1) { const float t = px0; px0 = px1; px1 = t; }
+        if (py0 > py1) { const float t = py0; py0 = py1; py1 = t; }
+        const int l = clamp(int(ceil(px0)), sx0, sx1 + 1), r = clamp(int(ceil(px1)), sx0, sx1 + 1);
+        const int t = clamp(int(ceil(py0)), sy0, sy1 + 1), bt = clamp(int(ceil(py1)), sy0, sy1 + 1);
+        if (l >= r || t >= bt) return ivec4(1, 1, 0, 0);
+        return ivec4(l, t, r - 1, bt - 1);
     }
     if (type == PRIM_POINT)
     {
