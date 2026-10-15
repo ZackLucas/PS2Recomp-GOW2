@@ -25,3 +25,4 @@ android/.gradle/
 .idea/
 # Local build trees
 build-*/
+__pycache__/

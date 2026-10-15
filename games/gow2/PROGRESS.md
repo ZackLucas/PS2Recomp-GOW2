@@ -81,10 +81,43 @@ A ideia é listar o que o jogo usa antes que ele quebre (detalhes no README):
 - Release com LTO leva mais de 25 min no link (um único `ltrans`). `-O2` sem LTO
   e sem logs compila em ~5,5 min e é o build prático.
 
+## Oráculo PCSX2 e replay de GS (15/10/2026)
+
+O PCSX2 v2.9.127 roda o jogo e serve de referência. Gravamos um dump de GS do
+menu (`Shift+F8`) e um screenshot do mesmo frame; ficam **fora do repositório**
+(`~/gow2/pcsx2-ref/`), porque contêm texturas e geometria do jogo.
+
+Ferramentas novas:
+- `scripts/gsdump.py`: lê o `.gs`/`.gs.zst`. `draws <dump> <frame>` lista as
+  configurações de desenho (formato de textura, blend, CLAMP, etc.).
+- `tools/gs_replay.cpp` (`-DPS2X_BUILD_GOW2_TOOLS=ON`, alvo `gow2_gs_replay`):
+  restaura estado e VRAM no nosso `GS`, reproduz os pacotes GIF, cronometra cada
+  frame e compara com a referência. O formato do dump foi derivado do próprio
+  arquivo e validado: o stream termina exatamente no EOF, e todo pacote termina
+  em fronteira de tag GIF.
+
+Resultados (build `-O2`, sem logs, dump do menu):
+- A VRAM do PCSX2 usa o mesmo layout físico do nosso GS: carregada no offset 425 do
+  bloco de estado, o nosso `Present` reproduz o frame inicial com erro médio 1,4.
+- O display do jogo é **512x448** (MAGH=4), não 640x448.
+- **Custo do GS: ~665 ms por frame do menu** (3,7 MB de GIF, ~38 mil primitivas),
+  só o GS, sem EE, VIF nem VU1. A 60 Hz o orçamento é 16,7 ms (40x). Isso é
+  quase todo o tempo de frame medido no menu (~2 VSyncs/s), então **o GS, e não o
+  VU1, é o gargalo do menu**.
+- **Corretude:** frame 0 (a VRAM inicial) bate com o PCSX2. Os frames 1 a 3 (o que
+  o nosso GS desenhou) divergem: erro médio ~11,3 e 64% dos pixels com diferença
+  maior que 8, enquanto os screenshots do PCSX2 diferem entre si em 1,8 a 3,3.
+  Não é borrão nem deslocamento; o erro é localizado (região esquerda-inferior).
+  Alguma(s) draw(s) específica(s) saem erradas. Próximo passo: isolar quais.
+- O frame do menu usa T4/T8 com CLUT (CLD=1), TFX=3 (HIGHLIGHT2), blends variados,
+  Z16/Z24 como textura/frame e um composite final que mistura 50% com o frame
+  anterior em CT24.
+
 ## Próximos passos
 
-1. **Perfil do menu** no build `-O2` (gravar só depois de chegar ao menu), para
-   saber o que domina a 3% de velocidade.
+1. **Isolar as draws que o nosso GS desenha errado** no replay do menu (ablação por
+   configuração de desenho) e corrigir com teste antes. Depois, **desempenho do GS**
+   medido pelo mesmo replay (665 ms/frame hoje).
 2. **Desempenho**, do mais barato ao mais caro:
    1. Modo rápido do VU1, sem simulação ciclo a ciclo.
    2. Escalonador do IOP sem varrer o `std::map` de threads várias vezes por fatia.
