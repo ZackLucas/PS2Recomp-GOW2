@@ -26,3 +26,11 @@ if(GOW2_EGL_LIB AND GOW2_GL_LIB)
     target_compile_definitions(gow2_gs_upload_test PRIVATE GOW2_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
     target_link_libraries(gow2_gs_upload_test PRIVATE ps2_runtime ${GOW2_EGL_LIB} ${GOW2_GL_LIB})
 endif()
+
+# GPU CLUT load + palette lookup vs GSCpuBackend.
+if(GOW2_EGL_LIB AND GOW2_GL_LIB)
+    add_executable(gow2_gs_clut_test gs_clut_test.cpp)
+    target_include_directories(gow2_gs_clut_test PRIVATE ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
+    target_compile_definitions(gow2_gs_clut_test PRIVATE GOW2_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+    target_link_libraries(gow2_gs_clut_test PRIVATE ps2_runtime ${GOW2_EGL_LIB} ${GOW2_GL_LIB})
+endif()

@@ -216,7 +216,14 @@ transferência como um fluxo contínuo, que é o comportamento do hardware.
 
 Próximos passos, em ordem (cada um com teste contra a implementação em C++):
 1. (feito) escrita de pixel e upload de imagem.
-2. Carga de CLUT (CSM1, CPSM CT32/CT16, CSA) e amostragem paletizada.
+2. (feito) carga de CLUT (CSM1/CSM2, CPSM CT32/CT24/CT16/CT16S, CSA, CLD 0 a 7) e
+   consulta de paleta com TEXA (`shaders/gs_clut_load.glsl`, `gs_clut.glsl`).
+   `gow2_gs_clut_test`: 6000 iterações, 3732 cargas, 9,2 milhões de consultas contra
+   `GSCpuBackend::LoadClut`/`LookupCLUT`, 0 divergências; validado quebrando o alfa
+   do TEXA e o swizzle CSM1 de propósito. A lógica de CLD (carregar ou não) fica na
+   CPU: é controle de fluxo. A versão GPU reproduz as peculiaridades do modelo em
+   CPU (ex.: T8 com CT32 e CSA != 0 carrega a partir de CSA sem deslocar); se o
+   PCSX2 divergir ali, corrigimos os dois lados com teste.
 3. Fragment shader com ordenação por pixel (`ARB_fragment_shader_interlock`): função
    de textura, filtro, teste de alfa, teste de profundidade, blend a/b/c/d, máscaras.
 4. Replay do frame do menu e comparação com a VRAM do GS em CPU e com o PCSX2.

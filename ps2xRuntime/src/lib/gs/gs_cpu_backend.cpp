@@ -636,6 +636,14 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
     }
 }
 
+uint32_t GSCpuBackend::LookupClutForTest(const GSTexaReg &texa, uint8_t index, uint8_t cpsm, uint8_t csm, uint8_t csa, uint8_t sourcePsm)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    GSDrawState state{};
+    state.texa = texa;
+    return LookupCLUT(state, index, cpsm, csm, csa, sourcePsm);
+}
+
 void GSCpuBackend::Flush()
 {
     // CPU backend is immediate. GPU backends may submit command buffers here.
