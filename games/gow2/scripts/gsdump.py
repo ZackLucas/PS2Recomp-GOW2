@@ -104,7 +104,7 @@ def main():
         if p[0] == 0: walk_gif(p[2], st)
     for k, v in sorted(st.items(), key=lambda kv: -kv[1])[:40]: print(f"  {k:28s} {v}")
 
-if __name__ == "__main__" and not (len(sys.argv) > 2 and sys.argv[1] == "draws"):
+if __name__ == "__main__" and not (len(sys.argv) > 2 and sys.argv[1] in ("draws", "tris")):
     main()
 
 
@@ -189,3 +189,109 @@ def cmd_draws(path, seg):
 
 if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[1] == "draws":
     cmd_draws(sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 0)
+
+
+# ---- triangle export: flatten one frame's GIF stream into screen-space triangles for GPU benchmarking ----
+def canonical_stream(d, seg=0):
+    """Yield (addr, value64, kick, extra) with packed registers converted to their A+D (canonical) form."""
+    q_latch = 0x3f800000
+    for reg, val in iter_register_writes(d, seg):
+        if isinstance(val, tuple):
+            lo, hi = val
+            if reg == 0x01:                       # packed RGBAQ
+                v = (lo & 0xff) | ((lo >> 32 & 0xff) << 8) | ((hi & 0xff) << 16) | ((hi >> 32 & 0xff) << 24) | (q_latch << 32)
+                yield (0x01, v, False, 0)
+            elif reg == 0x02:                     # packed ST (+Q)
+                q_latch = hi & 0xffffffff
+                yield (0x02, (lo & 0xffffffff) | ((lo >> 32 & 0xffffffff) << 32), False, 0)
+            elif reg == 0x03:
+                yield (0x03, (lo & 0x3fff) | ((lo >> 32 & 0x3fff) << 16), False, 0)
+            elif reg == 0x04:                     # XYZF2
+                v = (lo & 0xffff) | ((lo >> 32 & 0xffff) << 16) | (((hi >> 4) & 0xffffff) << 32)
+                yield (0x05, v, not (hi >> 47 & 1), 0)
+            elif reg == 0x05:                     # XYZ2
+                v = (lo & 0xffff) | ((lo >> 32 & 0xffff) << 16) | ((hi & 0xffffffff) << 32)
+                yield (0x05, v, not (hi >> 47 & 1), 0)
+            elif reg in (0x0c, 0x0d):
+                continue
+            else:
+                yield (reg, lo, False, 0)
+        else:
+            if reg == 0x04: yield (0x05, (val & 0xffffffff) | (((val >> 32) & 0xffffff) << 32), True, 0)
+            elif reg == 0x05: yield (0x05, val, True, 0)
+            elif reg in (0x0c, 0x0d): continue
+            else: yield (reg, val, False, 0)
+
+def export_triangles(d, seg, out_path):
+    st = {}
+    def g(name): return st.get(name, 0)
+    prim = 0
+    q = []          # vertex queue
+    rgbaq = 0x3f80000080808080; stv = 0; uvv = 0
+    setups, setup_ids, tris = [], {}, []
+    stats = collections.Counter()
+    for addr, val, kick, _ in canonical_stream(d, seg):
+        if addr == 0x00:
+            prim = val & 0x7ff; q = []
+        elif addr == 0x01: rgbaq = val
+        elif addr == 0x02: stv = val
+        elif addr == 0x03: uvv = val
+        elif addr == 0x05:
+            c = (prim >> 9) & 1
+            fr, t0, al, te, cl = g("fr%d"%c), g("t0%d"%c), g("al%d"%c), g("te%d"%c), g("cl%d"%c)
+            zb, t1, xo = g("zb%d"%c), g("t1%d"%c), g("xo%d"%c)
+            tme, abe, fst = (prim >> 4) & 1, (prim >> 6) & 1, (prim >> 8) & 1
+            ofx, ofy = (xo & 0xffff) / 16.0, ((xo >> 32) & 0xffff) / 16.0
+            x = ((val & 0xffff) / 16.0) - ofx; y = (((val >> 16) & 0xffff) / 16.0) - ofy; z = (val >> 32) & 0xffffffff
+            r, gg, b, a = rgbaq & 0xff, (rgbaq >> 8) & 0xff, (rgbaq >> 16) & 0xff, (rgbaq >> 24) & 0xff
+            tw, th = 1 << ((t0 >> 26) & 0xf), 1 << ((t0 >> 30) & 0xf)
+            if fst: u, v = (uvv & 0x3fff) / 16.0, ((uvv >> 16) & 0x3fff) / 16.0
+            else:
+                s_ = struct.unpack("<f", struct.pack("<I", stv & 0xffffffff))[0]
+                t_ = struct.unpack("<f", struct.pack("<I", stv >> 32))[0]
+                qq = struct.unpack("<f", struct.pack("<I", rgbaq >> 32))[0] or 1.0
+                u, v = s_ / qq * tw, t_ / qq * th
+            vert = (x, y, float(z), r, gg, b, a, u, v)
+            ptype = prim & 7
+            key = (c, fr, t0 if tme else 0, al if abe else 0, te, tme, abe, fst, cl, t1, zb)
+            if key not in setup_ids:
+                setup_ids[key] = len(setups)
+                setups.append((tw if tme else 0, th if tme else 0, tme, abe, al & 3, (al >> 2) & 3, (al >> 4) & 3, (al >> 6) & 3,
+                               (al >> 32) & 0xff, (t0 >> 35) & 3, (te >> 16) & 1, (te >> 17) & 3, 0))
+            sid = setup_ids[key]
+            # every XYZ write enters the vertex queue; ADC (kick=False) only suppresses the draw
+            q.append(vert)
+            stats["vertices"] += 1
+            if not kick: stats["adc_suppressed"] += 1
+            if ptype == 3 and len(q) == 3:
+                if kick: tris.append((sid, q[0], q[1], q[2]))
+                q = []
+            elif ptype == 4 and len(q) >= 3:
+                if kick: tris.append((sid, q[-3], q[-2], q[-1]))
+                q = q[-2:]
+            elif ptype == 5 and len(q) >= 3:
+                if kick: tris.append((sid, q[0], q[-2], q[-1]))
+                q = [q[0], q[-1]]
+            elif ptype == 6 and len(q) == 2:
+                if kick:
+                    a0, a1 = q
+                    b0 = (a0[0], a1[1], a1[2], a1[3], a1[4], a1[5], a1[6], a0[7], a1[8])
+                    b1 = (a1[0], a0[1], a1[2], a1[3], a1[4], a1[5], a1[6], a1[7], a0[8])
+                    tris.append((sid, a0, a1, b0)); tris.append((sid, a1, b1, b0))
+                q = []
+            elif ptype in (0, 1, 2):
+                stats["unsupported_prim_%d" % ptype] += 1; q = []
+        else:
+            for a_, n_ in ((0x4c,"fr0"),(0x4d,"fr1"),(0x06,"t00"),(0x07,"t01"),(0x42,"al0"),(0x43,"al1"),(0x47,"te0"),(0x48,"te1"),
+                           (0x08,"cl0"),(0x09,"cl1"),(0x4e,"zb0"),(0x4f,"zb1"),(0x14,"t10"),(0x15,"t11"),(0x18,"xo0"),(0x19,"xo1")):
+                if addr == a_: st[n_] = val
+    with open(out_path, "wb") as f:
+        f.write(b"GWTR" + struct.pack("<II", len(setups), len(tris)))
+        for s in setups: f.write(struct.pack("<HHBBBBBBBBBBH", *s))
+        for sid, *vs in tris:
+            f.write(struct.pack("<I", sid))
+            for vtx in vs[0:3]: f.write(struct.pack("<9f", *vtx))
+    print(f"exported {len(tris)} triangles, {len(setups)} setups -> {out_path}  {dict(stats)}")
+
+if __name__ == "__main__" and len(sys.argv) > 4 and sys.argv[1] == "tris":
+    export_triangles(Dump(load(sys.argv[2])), int(sys.argv[3]), sys.argv[4])

@@ -100,7 +100,7 @@ Resultados (build `-O2`, sem logs, dump do menu):
 - A VRAM do PCSX2 usa o mesmo layout físico do nosso GS: carregada no offset 425 do
   bloco de estado, o nosso `Present` reproduz o frame inicial com erro médio 1,4.
 - O display do jogo é **512x448** (MAGH=4), não 640x448.
-- **Custo do GS: ~665 ms por frame do menu** (3,7 MB de GIF, ~38 mil primitivas),
+- **Custo do GS: ~665 ms por frame do menu** (3,7 MB de GIF; 7,7 mil triângulos desenhados a partir de ~40 mil vértices enviados),
   só o GS, sem EE, VIF nem VU1. A 60 Hz o orçamento é 16,7 ms (40x). Isso é
   quase todo o tempo de frame medido no menu (~2 VSyncs/s), então **o GS, e não o
   VU1, é o gargalo do menu**.
@@ -109,6 +109,9 @@ Resultados (build `-O2`, sem logs, dump do menu):
   maior que 8, enquanto os screenshots do PCSX2 diferem entre si em 1,8 a 3,3.
   Não é borrão nem deslocamento; o erro é localizado (região esquerda-inferior).
   Alguma(s) draw(s) específica(s) saem erradas. Próximo passo: isolar quais.
+- **81% dos vértices enviados têm ADC=1**: o microcódigo do VU1 já descartou esses
+  triângulos (culling/clipping) e o GS só enfileira o vértice, sem desenhar. Nosso
+  `vertexKick` já respeita isso (o vértice entra na fila da tira e não dispara).
 - O frame do menu usa T4/T8 com CLUT (CLD=1), TFX=3 (HIGHLIGHT2), blends variados,
   Z16/Z24 como textura/frame e um composite final que mistura 50% com o frame
   anterior em CT24.
@@ -163,3 +166,23 @@ PS2_HIDE_DEBUG_UI=1 PS2_PERF_STATS=1 build-o2/ps2xRuntime/ps2EntryRunner SCUS_97
 
 Testes: configure um build com `-DPS2X_BUILD_TEST=ON -DPS2X_BUILD_RECOMP=ON
 -DPS2X_BUILD_ANALYZER=ON` e rode `ps2xTest/ps2x_tests`.
+
+## Benchmark de GPU (15/10/2026)
+
+`tools/gpu_bench.cpp` (`gow2_gpu_bench`, EGL headless + OpenGL 4.5 core) mede o que
+um GS em GPU custaria nesta máquina (RTX 5060 Ti, PCIe Gen4 x8). A parte B desenha
+os triângulos reais de um frame do dump (`gsdump.py tris <dump> <frame> <saida>`),
+com as mesmas 58 trocas de estado, textura (conteúdo aleatório), blend e depth.
+
+- Dados por frame: 0,83 MB de vértices; 1,27 MB de uploads de imagem do jogo (no
+  formato do GS). No pior caso, re-subir as 31 MB de texturas decodificadas custa
+  ~5 ms.
+- PCIe: 8 a 15 GB/s em transferências de MB; leitura sincronizada de um frame de
+  0,9 MB custa ~0,1 ms. **A banda não é o gargalo; latência e pontos de sincronização
+  é que importam.**
+- Desenho: 2,37 M fragmentos por frame (10x a tela) em ~0,05 ms. Vértices + desenho
+  ~0,14 ms por frame, contra ~665 ms do GS em CPU.
+
+Limites deste número: o shader é simplificado (sem CLUT nem decodificação de
+swizzle do GS, blend por função fixa) e as texturas são ruído. A decodificação das
+texturas a partir da VRAM do PS2 **não** foi medida e é onde o custo real vai estar.
