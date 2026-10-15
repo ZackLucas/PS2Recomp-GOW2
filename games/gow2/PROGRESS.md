@@ -204,9 +204,18 @@ Feito e testado:
   volta). Resultado: 0 divergências. O teste foi validado quebrando uma tabela de
   propósito (1,04 milhão de falhas).
 
+- `gsWriteRaw` e `shaders/gs_upload.glsl`: escrita de pixel nos 13 formatos (atomics
+  só na faixa de bits do próprio pixel) e upload host->local em compute shader.
+- `gow2_gs_upload_test`: transferências aleatórias (13 formatos, 60 por formato)
+  contra `GSCpuBackend::UploadImage`, comparando a VRAM inteira. 0 divergências;
+  validado quebrando a máscara do CT24 de propósito (266 mil palavras erradas).
+
+Observação: o upload em CPU descarta bytes de um pixel CT24 que cai na fronteira de
+um pacote GIF (`return` quando sobram menos de 3 bytes). A versão GPU trata a
+transferência como um fluxo contínuo, que é o comportamento do hardware.
+
 Próximos passos, em ordem (cada um com teste contra a implementação em C++):
-1. Escrita de pixel (os mesmos 13 formatos) e upload de imagem (IMAGE / BITBLTBUF /
-   TRXPOS / TRXREG) em compute shader.
+1. (feito) escrita de pixel e upload de imagem.
 2. Carga de CLUT (CSM1, CPSM CT32/CT16, CSA) e amostragem paletizada.
 3. Fragment shader com ordenação por pixel (`ARB_fragment_shader_interlock`): função
    de textura, filtro, teste de alfa, teste de profundidade, blend a/b/c/d, máscaras.

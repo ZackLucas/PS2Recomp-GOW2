@@ -100,3 +100,56 @@ uint gsReadRaw(uint psm, uint bp, uint bw, uint x, uint y)
     }
     return 0xFFFF00FFu;
 }
+
+// Equivalent of GSMem::PixelStorageTraits<psm>::Write. Sub-word writes use atomicAnd/atomicOr on
+// the disjoint bit range of this pixel, so concurrent writers to *different* pixels of one word
+// (T4/T8/16-bit/T8H) are safe. Requires a writable `vram` buffer.
+void gsWriteRaw(uint psm, uint bp, uint bw, uint x, uint y, uint value)
+{
+    const uint pixel = gsPixelIndex(psm, bp, bw, x, y);
+    const uint bits = pixel * gsUnpackedBits(psm) + gsBitOffset(psm);
+    uint byteAddr = bits / 8u;
+    const uint shift = bits % 8u;
+    const uint kMemMask = 0x3FFFFFu;
+
+    switch (psm)
+    {
+    case GS_PSM_CT32: case GS_PSM_Z32:
+        vram[(byteAddr & (kMemMask - 3u)) >> 2u] = value;
+        return;
+    case GS_PSM_CT24: case GS_PSM_Z24:
+    {
+        const uint w = (byteAddr & (kMemMask - 3u)) >> 2u;
+        atomicAnd(vram[w], 0xFF000000u);
+        atomicOr(vram[w], value & 0x00FFFFFFu);
+        return;
+    }
+    case GS_PSM_CT16: case GS_PSM_CT16S: case GS_PSM_Z16: case GS_PSM_Z16S:
+    {
+        byteAddr &= (kMemMask - 1u);
+        const uint sh = (byteAddr & 2u) * 8u;
+        const uint w = byteAddr >> 2u;
+        atomicAnd(vram[w], ~(0xFFFFu << sh));
+        atomicOr(vram[w], (value & 0xFFFFu) << sh);
+        return;
+    }
+    case GS_PSM_T8: case GS_PSM_T8H:
+    {
+        byteAddr &= kMemMask;
+        const uint sh = (byteAddr & 3u) * 8u;
+        const uint w = byteAddr >> 2u;
+        atomicAnd(vram[w], ~(0xFFu << sh));
+        atomicOr(vram[w], (value & 0xFFu) << sh);
+        return;
+    }
+    case GS_PSM_T4: case GS_PSM_T4HL: case GS_PSM_T4HH:
+    {
+        byteAddr &= kMemMask;
+        const uint sh = (byteAddr & 3u) * 8u + shift;
+        const uint w = byteAddr >> 2u;
+        atomicAnd(vram[w], ~(0xFu << sh));
+        atomicOr(vram[w], (value & 0xFu) << sh);
+        return;
+    }
+    }
+}

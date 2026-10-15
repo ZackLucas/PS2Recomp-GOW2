@@ -50,7 +50,7 @@ int main()
 
     const std::string dir = GOW2_SHADER_DIR;
     const std::string src = "#version 450\nlayout(local_size_x = 256) in;\n"
-        "layout(std430, binding = 0) readonly buffer Vram { uint vram[]; };\n"
+        "layout(std430, binding = 0) buffer Vram { uint vram[]; };\n"
         "struct Q { uint psm, bp, bw, x, y, p0, p1, p2; };\n"
         "layout(std430, binding = 1) readonly buffer Queries { Q q[]; };\n"
         "layout(std430, binding = 2) writeonly buffer Results { uint r[]; };\n" +
