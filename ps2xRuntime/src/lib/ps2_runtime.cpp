@@ -768,7 +768,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
                                      vu1CaptureProgram(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, startPC, top, itop, m_vu1.state(),
                                                        m_memory.getVU1Data(), PS2_VU1_DATA_SIZE);
-                                     if (!m_vu1Native.tryRun(m_vu1, m_memory, m_memory.getVU1Code(),
+                                     if (!m_vu1Native.tryRun(m_vu1, m_memory, m_gs, m_memory.getVU1Code(),
                                                              m_memory.getVU1CodeGeneration(), m_memory.getVU1Data(),
                                                              PS2_VU1_DATA_SIZE, startPC, top, itop))
                                          m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
