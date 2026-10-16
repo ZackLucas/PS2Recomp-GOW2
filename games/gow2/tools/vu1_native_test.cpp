@@ -11,6 +11,7 @@
 #include <map>
 #include <random>
 #include <string>
+#include <vector>
 
 using namespace vu1n;
 
@@ -158,6 +159,65 @@ int main()
             if (!ok) { ++S.bad; ++bad; if (S.first.empty()) { char b[400]; int vfd = 0, accd = 0; for (int r = 0; r < 32; ++r) if (std::memcmp(a.vf[r], st.vf[r], 16)) ++vfd; accd = std::memcmp(a.acc, st.acc, 16) != 0;
                 std::printf("[dbg %s u=%08x] vf regs differing: %d acc differs: %d\n", name.c_str(), u, vfd, accd);
                 if (name == "op0") { for (int r = 0; r < 32; ++r) if (std::memcmp(a.vf[r], st.vf[r], 16)) std::printf("   vf%d native %g %g %g %g | interp %g %g %g %g\n", r, a.vf[r][0], a.vf[r][1], a.vf[r][2], a.vf[r][3], st.vf[r][0], st.vf[r][1], st.vf[r][2], st.vf[r][3]); std::printf("   fd=%d fs=%d ft=%d dest=%x\n", (u >> 6) & 31, (u >> 11) & 31, (u >> 16) & 31, (u >> 21) & 15); } std::snprintf(b, sizeof b, "instr=%08x mac %x/%x st %x/%x clip %x/%x", u, a.mac, st.mac, a.status, st.status, a.clip, st.clip); S.first = b; } }
+        }
+    }
+
+    // ---------------- lower unit ----------------
+    {
+        std::vector<uint8_t> nmem(PS2_VU1_DATA_SIZE);
+        std::vector<std::pair<std::string, uint32_t>> forms;
+        for (uint32_t op : {0x00u, 0x01u, 0x04u, 0x05u, 0x08u, 0x09u, 0x10u, 0x11u, 0x12u, 0x13u, 0x14u, 0x15u, 0x16u, 0x17u, 0x18u, 0x1Au, 0x1Bu, 0x1Cu})
+            forms.push_back({"lo_op" + std::to_string(op), op << 25});
+        for (uint32_t f : {0x30u, 0x31u, 0x32u, 0x34u, 0x35u})
+            forms.push_back({"lo_f" + std::to_string(f), 0x80000000u | f});
+        for (uint32_t f2 : {0x30u, 0x31u, 0x34u, 0x35u, 0x36u, 0x37u, 0x38u, 0x39u, 0x3Au, 0x3Bu, 0x3Cu, 0x3Du, 0x3Eu, 0x3Fu, 0x40u, 0x41u, 0x42u, 0x43u, 0x64u, 0x68u, 0x69u,
+                            0x70u, 0x71u, 0x72u, 0x73u, 0x74u, 0x75u, 0x76u, 0x78u, 0x79u, 0x7Au, 0x7Bu, 0x7Cu, 0x7Du, 0x7Eu})
+            forms.push_back({"lo_g" + std::to_string(f2), 0x80000000u | 0x3Cu | (f2 & 3u) | ((f2 >> 2) << 6)});
+        for (auto &form : forms)
+        {
+            for (int n = 0; n < 1000; ++n)
+            {
+                uint32_t l = form.second;
+                const uint32_t keepLow = (l & 0x3Fu) >= 0x3Cu ? 0x7C0u : 0u;      // bits 6..10 hold f2 for the special group
+                uint32_t rnd = rng();
+                if (form.second >> 25 == 0x40 || (form.second & 0x80000000u)) rnd &= ~0x7FE0000u & 0x7FFFFFFu; // opcode fixed
+                l |= rnd & ~(0x3Fu | keepLow) & 0x01FFFFFFu;
+                if (!(form.second & 0x80000000u) || true) l |= 0;
+                State a{};
+                std::memset(&a, 0, sizeof(a));
+                for (int r = 1; r < 32; ++r) for (int c = 0; c < 4; ++c) a.vf[r][c] = randFloat();
+                a.vf[0][3] = 1.0f;
+                for (int c = 0; c < 4; ++c) a.acc[c] = randFloat();
+                a.q = randFloat(); a.p = randFloat(); a.i = randFloat();
+                for (int r = 1; r < 16; ++r) a.vi[r] = static_cast<int16_t>(rng() & 0xFFFF);
+                a.mac = rng() & 0xFFFF; a.status = rng() & 0xFFF; a.clip = rng() & 0xFFFFFF; a.workingClip = a.clip;
+                a.r = 0x3F800000u | (rng() & 0x7FFFFFu); a.top = rng() & 0x3FF; a.itop = rng() & 0x3FF;
+                for (auto &b : nmem) b = static_cast<uint8_t>(rng());
+                a.mem = nmem.data(); a.memSize = PS2_VU1_DATA_SIZE;
+                std::memcpy(data, nmem.data(), PS2_VU1_DATA_SIZE);
+                vu.reset();
+                VU1State &st = vu.state();
+                std::memcpy(st.vf, a.vf, sizeof(st.vf)); std::memcpy(st.acc, a.acc, sizeof(st.acc));
+                st.q = a.q; st.p = a.p; st.i = a.i; st.mac = a.mac; st.status = a.status; st.clip = a.clip; st.r = a.r;
+                for (int r = 0; r < 16; ++r) st.vi[r] = a.vi[r];
+                const uint32_t nopU = 0x400002FFu, nopL = 0x8000033Cu, nopU2 = 0x000002FFu;
+                std::memset(code, 0, 16);
+                std::memcpy(code + 0, &l, 4); std::memcpy(code + 4, &nopU, 4);
+                std::memcpy(code + 8, &nopL, 4); std::memcpy(code + 12, &nopU2, 4);
+                vu.execute(code, PS2_VU1_CODE_SIZE, data, PS2_VU1_DATA_SIZE, gs, nullptr, 0, a.top, a.itop, 1000);
+                const int prev = std::fegetround();
+                std::fesetround(FE_TOWARDZERO);
+                lower(a, l);
+                std::fesetround(prev);
+                bool ok = std::memcmp(a.vf, st.vf, sizeof(a.vf)) == 0 && std::memcmp(a.acc, st.acc, sizeof(a.acc)) == 0 && a.mac == st.mac &&
+                          a.status == st.status && a.clip == st.clip && std::memcmp(&a.q, &st.q, 4) == 0 && std::memcmp(&a.p, &st.p, 4) == 0 && a.r == st.r &&
+                          std::memcmp(nmem.data(), data, PS2_VU1_DATA_SIZE) == 0;
+                for (int r = 0; r < 16; ++r) ok = ok && (a.vi[r] == st.vi[r]);
+                Stat &S = stats[form.first]; ++S.n; ++total;
+                if (!ok) { ++S.bad; ++bad; if (S.first.empty()) { char b[300]; std::snprintf(b, sizeof b, "instr=%08x", l); S.first = b;
+                    if (form.first == "lo_op8" || form.first == "lo_op27") { std::printf("[dbg2 %s %08x] vf:%d acc:%d mac:%d/%x status:%x/%x clip:%d q:%d p:%d r:%d mem:%d\n", form.first.c_str(), l, std::memcmp(a.vf, st.vf, sizeof(a.vf)) != 0, std::memcmp(a.acc, st.acc, 16) != 0, a.mac == st.mac, st.mac, a.status, st.status, a.clip != st.clip, a.q != st.q, a.p != st.p, a.r != st.r, std::memcmp(nmem.data(), data, PS2_VU1_DATA_SIZE) != 0);
+                        for (int r = 0; r < 16; ++r) if (a.vi[r] != st.vi[r]) std::printf("   vi%d native %d interp %d\n", r, a.vi[r], st.vi[r]); } } }
+            }
         }
     }
     for (auto &kv : stats) if (kv.second.bad) std::printf("%-6s %d/%d mismatches  e.g. %s\n", kv.first.c_str(), kv.second.bad, kv.second.n, kv.second.first.c_str());

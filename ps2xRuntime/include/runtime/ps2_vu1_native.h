@@ -25,6 +25,11 @@ namespace vu1n
         uint32_t status;
         uint32_t clip;
         uint32_t workingClip;
+        uint32_t r;
+        uint32_t top;
+        uint32_t itop;
+        uint8_t *mem;      // VU data memory
+        uint32_t memSize;  // power of two (16 KiB on VU1)
     };
 
     inline float opnd(float v)
@@ -286,6 +291,186 @@ namespace vu1n
         }
         s.workingClip = ((s.workingClip << 6) | (f & 0x3Fu)) & 0xFFFFFFu;
         s.clip = s.workingClip;
+    }
+
+    // ======================= Lower unit (integer / load-store / flags / divide / EFU) =======================
+    // Branches, XGKICK and program flow are handled by the generated code, not here.
+#define VU1N_INLINE inline __attribute__((always_inline))
+
+    namespace detail
+    {
+        VU1N_INLINE int16_t imm11(uint32_t i) { return static_cast<int16_t>(static_cast<int32_t>(i << 21) >> 21); }
+        VU1N_INLINE uint32_t addrOf(const State &s, int32_t base) { return (static_cast<uint32_t>(base) * 16u) & (s.memSize - 1u); }
+        VU1N_INLINE float normResult(float value)
+        {
+            uint32_t bits;
+            std::memcpy(&bits, &value, 4);
+            const uint32_t sign = bits & 0x80000000u, mag = bits & 0x7FFFFFFFu, e = (bits >> 23) & 0xFFu;
+            if (mag == 0u) { }
+            else if (e == 0u) bits = sign;
+            else if (e == 0xFFu) bits = sign | 0x7F7FFFFFu;
+            std::memcpy(&value, &bits, 4);
+            return value;
+        }
+        inline float eatan(float value)
+        {
+            static const float c[] = {0.999999344348907f, -0.333298563957214f, 0.199465364217758f, -0.13085337519646f,
+                                      0.096420042216778f, -0.055909886956215f, 0.021861229091883f, -0.004054057877511f};
+            const float sq = value * value;
+            float poly = c[7];
+            for (int k = 6; k >= 0; --k) poly = c[k] + sq * poly;
+            return 0.785398185253143f + value * poly;
+        }
+        inline float esin(float value)
+        {
+            static const float c[] = {1.0f, -0.166666567325592f, 0.008333025500178f, -0.000198074136279f, 0.000002601886990f};
+            const float sq = value * value;
+            float poly = c[4];
+            for (int k = 3; k >= 0; --k) poly = c[k] + sq * poly;
+            return value * poly;
+        }
+        inline float eexp(float value)
+        {
+            static const float c[] = {0.249998688697815f, 0.031257584691048f, 0.002591371303424f,
+                                      0.000171562001924f, 0.000005430199963f, 0.000000690600018f};
+            float poly = c[5];
+            for (int k = 4; k >= 0; --k) poly = c[k] + value * poly;
+            poly = 1.0f + value * poly;
+            poly *= poly;
+            poly *= poly;
+            return poly != 0.0f ? 1.0f / poly : std::numeric_limits<float>::max();
+        }
+        VU1N_INLINE void setQ(State &s, float v, uint32_t di)
+        {
+            s.q = normResult(v);
+            const uint32_t d = di & 0x30u;
+            s.status = (s.status & 0xFCFu) | d | (d << 6);
+        }
+        VU1N_INLINE int destComp(uint8_t dest) { return (dest & 8) ? 0 : (dest & 4) ? 1 : (dest & 2) ? 2 : 3; }
+        VU1N_INLINE void storeQ(State &s, uint32_t addr, const uint32_t w[4], uint8_t mask)
+        {
+            uint32_t old[4];
+            std::memcpy(old, s.mem + addr, 16);
+            for (int c = 0; c < 4; ++c)
+                if (mask & (8u >> c)) old[c] = w[c];
+            std::memcpy(s.mem + addr, old, 16);
+        }
+        VU1N_INLINE void viSet(State &s, int reg, int32_t v) { if (reg != 0) s.vi[reg] = static_cast<int16_t>(v); }
+    } // namespace detail
+
+    // Executes one non-branching lower instruction. `i` is a literal in generated code so this folds away.
+    VU1N_INLINE void lower(State &s, uint32_t i)
+    {
+        using namespace detail;
+        if (i == 0x00000000u || i == 0x8000033Cu)
+            return;
+        const uint32_t op = (i >> 25) & 0x7Fu;
+        const int ft = (i >> 16) & 0x1F, fs = (i >> 11) & 0x1F, fd = (i >> 6) & 0x1F;
+        const int it = ft & 0xF, is = fs & 0xF, id = fd & 0xF;
+        const uint8_t dest = (i >> 21) & 0xF;
+        const uint32_t imm24 = i & 0xFFFFFFu;
+        const uint16_t imm12 = static_cast<uint16_t>((((i >> 21) & 1u) << 11) | (i & 0x7FFu));
+        switch (op)
+        {
+        case 0x00: { const uint32_t a = addrOf(s, s.vi[is] + imm11(i)); float t[4]; std::memcpy(t, s.mem + a, 16); writeVf(s, ft, t, dest); return; }
+        case 0x01: { const uint32_t a = addrOf(s, s.vi[it] + imm11(i)); uint32_t w[4]; std::memcpy(w, s.vf[fs], 16); storeQ(s, a, w, dest); return; }
+        case 0x04: { const uint32_t a = addrOf(s, s.vi[is] + imm11(i)); uint32_t v; std::memcpy(&v, s.mem + a + destComp(dest) * 4, 4); viSet(s, it, static_cast<int32_t>(static_cast<int16_t>(v & 0xFFFF))); return; }
+        case 0x05: { const uint32_t a = addrOf(s, s.vi[is] + imm11(i)); const uint32_t v = static_cast<uint16_t>(s.vi[it] & 0xFFFF); const uint32_t w[4] = {v, v, v, v}; storeQ(s, a, w, dest); return; }
+        case 0x08: { const int16_t imm = static_cast<int16_t>(static_cast<int16_t>(i & 0x7FF) | ((i >> 10) & 0x7800)); viSet(s, it, static_cast<int16_t>(s.vi[is] + imm)); return; }
+        case 0x09: { const int16_t imm = static_cast<int16_t>(static_cast<int16_t>(i & 0x7FF) | ((i >> 10) & 0x7800)); viSet(s, it, static_cast<int16_t>(s.vi[is] - imm)); return; }
+        case 0x10: s.vi[1] = ((s.clip & 0xFFFFFFu) == imm24) ? 1 : 0; return;
+        case 0x11: s.workingClip = imm24; s.clip = imm24; return;
+        case 0x12: s.vi[1] = ((s.clip & imm24) != 0) ? 1 : 0; return;
+        case 0x13: s.vi[1] = ((s.clip | imm24) == 0xFFFFFFu) ? 1 : 0; return;
+        case 0x14: viSet(s, it, ((s.status & 0xFFFu) == imm12) ? 1 : 0); return;
+        case 0x15: s.status = (s.status & 0x03Fu) | (imm12 & 0xFC0u); return;
+        case 0x16: viSet(s, it, static_cast<int32_t>((s.status & 0xFFFu) & imm12)); return;
+        case 0x17: viSet(s, it, static_cast<int32_t>((s.status & 0xFFFu) | imm12)); return;
+        case 0x18: viSet(s, it, ((s.mac & 0xFFFFu) == static_cast<uint32_t>(static_cast<uint16_t>(s.vi[is]))) ? 1 : 0); return;
+        case 0x1A: viSet(s, it, static_cast<int32_t>(s.mac & static_cast<uint32_t>(static_cast<uint16_t>(s.vi[is])))); return;
+        case 0x1B: viSet(s, it, static_cast<int32_t>(s.mac | static_cast<uint32_t>(static_cast<uint16_t>(s.vi[is])))); return;
+        case 0x1C: viSet(s, it, static_cast<int32_t>(s.clip & 0x0FFFu)); return;
+        case 0x40:
+        {
+            const uint32_t funct = i & 0x3Fu;
+            switch (funct)
+            {
+            case 0x30: viSet(s, id, static_cast<int16_t>(s.vi[is] + s.vi[it])); return;
+            case 0x31: viSet(s, id, static_cast<int16_t>(s.vi[is] - s.vi[it])); return;
+            case 0x32: { const int16_t imm5 = static_cast<int16_t>(static_cast<int32_t>((i >> 6) & 0x1F) << 27 >> 27); viSet(s, it, static_cast<int16_t>(s.vi[is] + imm5)); return; }
+            case 0x34: viSet(s, id, s.vi[is] & s.vi[it]); return;
+            case 0x35: viSet(s, id, s.vi[is] | s.vi[it]); return;
+            default: break;
+            }
+            if (funct < 0x3C) return;
+            const uint32_t f2 = (i & 3u) | ((i >> 4) & 0x7Cu);
+            const int fsf = (i >> 21) & 3, ftf = (i >> 23) & 3;
+            switch (f2)
+            {
+            case 0x30: { float t[4]; std::memcpy(t, s.vf[fs], 16); writeVf(s, ft, t, dest); return; }
+            case 0x31: { const float t[4] = {s.vf[fs][1], s.vf[fs][2], s.vf[fs][3], s.vf[fs][0]}; writeVf(s, ft, t, dest); return; }
+            case 0x34: { const uint32_t a = addrOf(s, static_cast<uint16_t>(s.vi[is])); float t[4]; std::memcpy(t, s.mem + a, 16); writeVf(s, ft, t, dest); if (is != 0) s.vi[is] = static_cast<int16_t>(s.vi[is] + 1); return; }
+            case 0x35: { const uint32_t a = addrOf(s, static_cast<uint16_t>(s.vi[it])); uint32_t w[4]; std::memcpy(w, s.vf[fs], 16); storeQ(s, a, w, dest); if (it != 0) s.vi[it] = static_cast<int16_t>(s.vi[it] + 1); return; }
+            case 0x36: { if (is != 0) s.vi[is] = static_cast<int16_t>(s.vi[is] - 1); const uint32_t a = addrOf(s, static_cast<uint16_t>(s.vi[is])); float t[4]; std::memcpy(t, s.mem + a, 16); writeVf(s, ft, t, dest); return; }
+            case 0x37: { if (it != 0) s.vi[it] = static_cast<int16_t>(s.vi[it] - 1); const uint32_t a = addrOf(s, static_cast<uint16_t>(s.vi[it])); uint32_t w[4]; std::memcpy(w, s.vf[fs], 16); storeQ(s, a, w, dest); return; }
+            case 0x38:
+            {
+                const float num = opnd(s.vf[fs][fsf]), den = opnd(s.vf[ft][ftf]);
+                uint32_t di = 0; float r;
+                if (den == 0.0f) { di = num == 0.0f ? 0x10u : 0x20u; r = std::signbit(num) != std::signbit(den) ? -std::numeric_limits<float>::max() : std::numeric_limits<float>::max(); }
+                else r = num / den;
+                setQ(s, normResult(r), di);
+                return;
+            }
+            case 0x39: { const float v = opnd(s.vf[ft][ftf]); setQ(s, std::sqrt(std::fabs(v)), v < 0.0f ? 0x10u : 0u); return; }
+            case 0x3A:
+            {
+                const float num = opnd(s.vf[fs][fsf]), rad = opnd(s.vf[ft][ftf]);
+                const float den = std::sqrt(std::fabs(rad));
+                uint32_t di = rad < 0.0f ? 0x10u : 0u; float r;
+                if (den != 0.0f) r = num / den;
+                else { di = num == 0.0f ? 0x10u : 0x20u; r = std::signbit(num) ? -std::numeric_limits<float>::max() : std::numeric_limits<float>::max(); }
+                setQ(s, normResult(r), di);
+                return;
+            }
+            case 0x3B: return;
+            case 0x3C: { uint32_t v; std::memcpy(&v, &s.vf[fs][(i >> 21) & 3], 4); viSet(s, it, static_cast<int32_t>(static_cast<int16_t>(v & 0xFFFF))); return; }
+            case 0x3D: { int32_t v = static_cast<int32_t>(static_cast<int16_t>(s.vi[is] & 0xFFFF)); float f; std::memcpy(&f, &v, 4); const float t[4] = {f, f, f, f}; writeVf(s, ft, t, dest); return; }
+            case 0x3E: { const uint32_t a = addrOf(s, static_cast<uint16_t>(s.vi[is])); uint32_t v; std::memcpy(&v, s.mem + a + destComp(dest) * 4, 4); viSet(s, it, static_cast<int32_t>(static_cast<int16_t>(v & 0xFFFF))); return; }
+            case 0x3F: { const uint32_t a = addrOf(s, static_cast<uint16_t>(s.vi[is])); const uint32_t v = static_cast<uint16_t>(s.vi[it] & 0xFFFF); const uint32_t w[4] = {v, v, v, v}; storeQ(s, a, w, dest); return; }
+            case 0x40: { const uint32_t x = (s.r >> 4) & 1u, y = (s.r >> 22) & 1u; s.r = ((s.r << 1) ^ x ^ y) & 0x007FFFFFu; s.r |= 0x3F800000u; float f; std::memcpy(&f, &s.r, 4); const float t[4] = {f, f, f, f}; writeVf(s, ft, t, dest); return; }
+            case 0x41: { float f; std::memcpy(&f, &s.r, 4); const float t[4] = {f, f, f, f}; writeVf(s, ft, t, dest); return; }
+            case 0x42: { uint32_t b; std::memcpy(&b, &s.vf[fs][(i >> 21) & 3], 4); s.r = 0x3F800000u | (b & 0x007FFFFFu); return; }
+            case 0x43: { uint32_t b; std::memcpy(&b, &s.vf[fs][(i >> 21) & 3], 4); s.r = 0x3F800000u | ((s.r ^ b) & 0x007FFFFFu); return; }
+            case 0x64: { const float t[4] = {s.p, s.p, s.p, s.p}; writeVf(s, ft, t, dest); return; }
+            case 0x68: viSet(s, it, static_cast<int32_t>(s.top & 0x3FFu)); return;
+            case 0x69: viSet(s, it, static_cast<int32_t>(s.itop & 0x3FFu)); return;
+            case 0x70: case 0x71: case 0x72: case 0x73:
+            {
+                const float x = opnd(s.vf[fs][0]), y = opnd(s.vf[fs][1]), z = opnd(s.vf[fs][2]);
+                const float sum = x * x + y * y + z * z;
+                float r;
+                if (f2 == 0x70) r = sum;
+                else if (f2 == 0x71) r = sum != 0.0f ? 1.0f / sum : sum;
+                else { const float len = std::sqrt(sum); r = f2 == 0x72 ? len : (len != 0.0f ? 1.0f / len : len); }
+                s.p = normResult(r);
+                return;
+            }
+            case 0x74: { const float x = opnd(s.vf[fs][0]), y = opnd(s.vf[fs][1]); s.p = normResult(x != 0.0f ? eatan(y / x) : 0.0f); return; }
+            case 0x75: { const float x = opnd(s.vf[fs][0]), z = opnd(s.vf[fs][2]); s.p = normResult(x != 0.0f ? eatan(z / x) : 0.0f); return; }
+            case 0x76: { float sum = 0.0f; for (int c = 0; c < 4; ++c) sum += opnd(s.vf[fs][c]); s.p = normResult(sum); return; }
+            case 0x78: { const float v = opnd(s.vf[fs][(i >> 21) & 3]); s.p = normResult(v >= 0.0f ? std::sqrt(v) : v); return; }
+            case 0x79: { float r = opnd(s.vf[fs][(i >> 21) & 3]); if (r >= 0.0f) { r = std::sqrt(r); if (r != 0.0f) r = 1.0f / r; } s.p = normResult(r); return; }
+            case 0x7A: { const float v = opnd(s.vf[fs][(i >> 21) & 3]); s.p = normResult(v != 0.0f ? 1.0f / v : v); return; }
+            case 0x7B: return;
+            case 0x7C: s.p = normResult(esin(opnd(s.vf[fs][(i >> 21) & 3]))); return;
+            case 0x7D: s.p = normResult(eatan(opnd(s.vf[fs][(i >> 21) & 3]))); return;
+            case 0x7E: s.p = normResult(eexp(opnd(s.vf[fs][(i >> 21) & 3]))); return;
+            default: return;
+            }
+        }
+        default: return;
+        }
     }
 } // namespace vu1n
 
