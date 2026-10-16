@@ -15,6 +15,17 @@
 10. **GLSL**: divisão não é IEEE, `precise` obrigatório, tabelas grandes em SSBO, cuidado com FMA.
 11. **Teste aleatório não cobre dados reais**: o `draw_test` passava com 16 000 prims enquanto o quadro real
     divergia (auto-realimentação, sprites de tamanho zero...). Ter sempre um teste sobre quadro real.
+12. **`kill_all` por nome amplo matou o PCSX2 do usuário** (2026-10-16): casava `pcsx2-v2.9` em qualquer instância.
+    Corrigido para casar só `-datapath /tmp/pcsx2-exact-data`. Regra: ferramenta de automação nunca mata por padrão amplo.
+13. **`printf %02d` com 08/09 falha** (octal) em shell: nomes de saída trocados e arquivos sobrescritos; uma grade de
+    resultados saiu com cenas misturadas. Nomear saídas pelo horário do dump, nunca por contador formatado.
+14. **O screenshot do PCSX2 é 1024x603 já filtrado** (display filter): comparar com a saída crua 512x448 dá
+    "serrilhado" que não é erro do GS. Reduzir por média de área antes de comparar.
+15. **Replay de dump no PCSX2 pára em um quadro aleatório do dump** ("Dump Frame: N / Packet a/b"): sem escolher o
+    quadro, a comparação exata mede o quadro errado. `hud_exact.py` ficou experimental por isso.
+16. **Dumps tirados durante FMV têm 1–2 primitivas** (vídeo MPEG decodificado + sprite): não validam rasterização.
+    Gameplay de verdade: 70–290 mil primitivas por 3 quadros.
+17. **Start (Return) apertado em gameplay abre a pausa**: roteiros de teclas devem parar de enviar Start após o FMV.
 
 ## Lições de método
 * **Sempre medir um controle** (corte 0, textura conhecida) antes de atribuir erro ao modelo.

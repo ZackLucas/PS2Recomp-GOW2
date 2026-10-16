@@ -39,7 +39,8 @@ def ensure_env():
 
 def kill_all():
     for _ in range(20):
-        pids = subprocess.run("ps -eo pid,args | awk '/pcsx2-v2.9/ && !/awk/ {print $1}'", shell=True, capture_output=True, text=True).stdout.split()
+        # only instances started with OUR private data dir: never touch a PCSX2 the user is playing
+        pids = subprocess.run(["pgrep", "-f", f"pcsx2-v2.9.*-datapath {DATA}"], capture_output=True, text=True).stdout.split()
         if not pids: break
         subprocess.run(["kill", "-9"] + pids); time.sleep(0.5)
     time.sleep(1)

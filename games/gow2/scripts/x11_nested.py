@@ -35,7 +35,7 @@ elif sys.argv[1] == "key":
     wid = ws[0][0]
     x.XSetInputFocus(d, ctypes.c_ulong(wid), 1, 0)   # RevertToParent, CurrentTime
     x.XFlush(d); time.sleep(0.3)
-    KS = {"Shift": 0xffe1, "F8": 0xffc5}
+    KS = {"Shift": 0xffe1, "F8": 0xffc5, "Return": 0xff0d, "K": 0x6b, "J": 0x6a, "W": 0x77, "D": 0x64, "L": 0x6c, "Down": 0xff54, "Up": 0xff52, "Left": 0xff51, "Right": 0xff53}
     codes = [x.XKeysymToKeycode(d, ctypes.c_ulong(KS[k])) for k in sys.argv[2].split("+")]
     for c in codes: t.XTestFakeKeyEvent(d, c, 1, 0)
     x.XFlush(d); time.sleep(0.2)
