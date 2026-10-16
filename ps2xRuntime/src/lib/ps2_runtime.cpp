@@ -32,6 +32,32 @@
 #include <cstdio>
 #include <cstdlib>
 
+
+// First operations that create NaN/Inf from finite inputs (see ps2_runtime_macros.h). Prints the first 40, then one
+// line per 100000 further occurrences; `site` is the address inside the recompiled function (subtract the address of
+// ps2x_fp_report and add its nm address to map it).
+extern "C" __attribute__((noinline, cold)) void ps2x_fp_report(const char *kind, const float *a, const float *b, const float *r, int lanes)
+{
+    static std::atomic<uint64_t> count{0};
+    const uint64_t n = count.fetch_add(1, std::memory_order_relaxed);
+    if (n >= 40 && (n % 100000u) != 0u)
+        return;
+    const uintptr_t site = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+    const uintptr_t self = reinterpret_cast<uintptr_t>(&ps2x_fp_report);
+    uint32_t ab[4], bb[4], rb[4];
+    std::memcpy(ab, a, 4u * static_cast<uint32_t>(lanes));
+    std::memcpy(bb, b, 4u * static_cast<uint32_t>(lanes));
+    std::memcpy(rb, r, 4u * static_cast<uint32_t>(lanes));
+    std::fprintf(stderr, "[ee-fp] #%llu %s site=report%+lld a=", static_cast<unsigned long long>(n), kind,
+                 static_cast<long long>(static_cast<intptr_t>(site) - static_cast<intptr_t>(self)));
+    for (int i = 0; i < lanes; ++i) std::fprintf(stderr, "%s%08x", i ? "," : "", ab[i]);
+    std::fprintf(stderr, " b=");
+    for (int i = 0; i < lanes; ++i) std::fprintf(stderr, "%s%08x", i ? "," : "", bb[i]);
+    std::fprintf(stderr, " r=");
+    for (int i = 0; i < lanes; ++i) std::fprintf(stderr, "%s%08x", i ? "," : "", rb[i]);
+    std::fprintf(stderr, "\n");
+}
+
 namespace
 {
     // PS2_VU1_CAPTURE=<dir>: save every distinct VU1 micro-memory image seen at MSCAL and count calls per

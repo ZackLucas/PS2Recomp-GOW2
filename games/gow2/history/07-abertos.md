@@ -161,3 +161,17 @@ hardware**:
   para zero), mas as macros do FPU do EE no runtime são IEEE puro: `FPU_ADD_S/SUB_S/MUL_S/DIV_S/SQRT_S` em
   `ps2xRuntime/include/ps2_runtime_macros.h` (~l.610). **Hipótese principal para o fundo preto**, ainda não provada.
 * Falta provar: contar `0xFFC00000` na RAM do EE do nosso runtime e achar quem escreve o primeiro.
+
+### A20 RESOLVIDO (2026-10-16): FPU do EE seguia IEEE; agora segue as regras do PS2
+* **Origem achada** com a instrumentação `ps2x_fp_report` (primeiras operações que criam NaN/Inf a partir de entradas finitas):
+  `SQRT.S` de números **negativos** (ex.: -0,0187) dava NaN `0xFFC00000` nas funções do jogo `0x18B2D0` e `0x146818`
+  (no PS2 usa o valor absoluto), e um `VMUL` do VU0 em modo macro (`0x18AEA0`) estourava para +Inf (no PS2 satura em Fmax).
+  Esses NaN/Inf entravam nas matrizes enviadas ao VU1 e saturavam os VF.
+* **Peça:** `ps2xRuntime/include/ps2_ee_fp.h` (operandos: denormal -> 0, Inf/NaN -> ±Fmax; resultados: Inf -> ±Fmax,
+  denormal -> 0; SQRT usa |x|; DIV por zero -> ±Fmax) usada pelos macros `FPU_*` e `PS2_V*`. Teste
+  `games/gow2/tools/ee_fp_test.cpp` (30 casos, regras conferidas com o comportamento do FPU.cpp do PCSX2, lido e reimplementado).
+* **Resultado medido (mesmo cenário, menu, ~50 s):** palavras `0xFFC00000` na memória do VU1: 107.319 (127/chamada) -> **0**;
+  chamadas com >=3 VF saturados: 800 de 845 (95%) -> 5 de 46 (11%). O fundo deixou de ser preto (agora há textura
+  vermelha/laranja), mas ainda não parece o rosto do Kratos do PCSX2.
+* **Não feito (refinamento):** flags do FPU (FCR31) e MAC/status do VU0, arredondamento para zero do EE, `CVT.W.S` com
+  saturação inteira.
