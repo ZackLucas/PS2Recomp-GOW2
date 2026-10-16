@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cfenv>
 #include <cstdio>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 
@@ -71,6 +72,7 @@ bool Vu1NativeBridge::tryRun(VU1Interpreter &vu, PS2Memory &memory, GS &gs, cons
         return false;
     }
 
+    const auto t0 = std::chrono::steady_clock::now();
     m_snapshot.assign(data, data + dataSize);
     m_packets.clear();
     PacketSink sink{&m_packets};
@@ -89,7 +91,9 @@ bool Vu1NativeBridge::tryRun(VU1Interpreter &vu, PS2Memory &memory, GS &gs, cons
 
     const int prev = std::fegetround();
     std::fesetround(FE_TOWARDZERO);
+    const auto t1 = std::chrono::steady_clock::now();
     const int32_t rc = vu1n::runProgram(a, m_table, entry);
+    const auto t2 = std::chrono::steady_clock::now();
     std::fesetround(prev);
 
     if (rc != -1)
@@ -115,8 +119,15 @@ bool Vu1NativeBridge::tryRun(VU1Interpreter &vu, PS2Memory &memory, GS &gs, cons
     tally.packets += m_packets.size();
     for (const auto &pkt : m_packets)
         tally.bytes += pkt.size();
+    const auto t3 = std::chrono::steady_clock::now();
     for (const auto &pkt : m_packets)
         memory.submitGifPacket(GifPathId::Path1, pkt.data(), static_cast<uint32_t>(pkt.size()));
+    const auto t4 = std::chrono::steady_clock::now();
+    using ns = std::chrono::nanoseconds;
+    m_nsPrep += std::chrono::duration_cast<ns>(t1 - t0).count();
+    m_nsRun += std::chrono::duration_cast<ns>(t2 - t1).count();
+    m_nsPost += std::chrono::duration_cast<ns>(t3 - t2).count();
+    m_nsSubmit += std::chrono::duration_cast<ns>(t4 - t3).count();
     if ((++m_stats.native & 0x3FFF) == 0 && std::getenv("PS2_VU1_NATIVE_STATS"))
         std::fprintf(stderr, "[VU1 native] native=%llu unknown=%llu dbit=%llu budget=%llu\n", (unsigned long long)m_stats.native,
                      (unsigned long long)m_stats.fallbackUnknown, (unsigned long long)m_stats.fallbackFlags,
@@ -219,6 +230,9 @@ void Vu1NativeBridge::reportWindow(std::FILE *out, uint64_t vsyncs)
         total.calls += t.calls; total.packets += t.packets; total.bytes += t.bytes; total.cycles += t.cycles;
     }
     const double v = static_cast<double>(vsyncs);
+    std::fprintf(out, "[vu1 ns/call] prep(copy+state)=%.0f run=%.0f post(writeback)=%.0f submit(GIF)=%.0f\n", double(m_nsPrep) / total.calls,
+                 double(m_nsRun) / total.calls, double(m_nsPost) / total.calls, double(m_nsSubmit) / total.calls);
+    m_nsPrep = m_nsRun = m_nsPost = m_nsSubmit = 0;
     std::fprintf(out, "[vu1/vsync] calls=%.0f packets=%.0f KB=%.0f vu-cycles=%.0f\n", total.calls / v, total.packets / v,
                  total.bytes / v / 1024.0, total.cycles / v);
     std::vector<std::pair<uint32_t, EntryTally>> rows(m_tally.begin(), m_tally.end());

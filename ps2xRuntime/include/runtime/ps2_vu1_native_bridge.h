@@ -51,6 +51,7 @@ private:
         uint64_t calls = 0, packets = 0, bytes = 0, cycles = 0;
     };
     std::map<uint32_t, EntryTally> m_tally;
+    uint64_t m_nsPrep = 0, m_nsRun = 0, m_nsPost = 0, m_nsSubmit = 0; // wall time inside tryRun, per phase, since the last report
     bool m_verify = false;
     VU1Interpreter m_ref{VU1Interpreter::Unit::VU1};
     std::vector<uint8_t> m_refData;

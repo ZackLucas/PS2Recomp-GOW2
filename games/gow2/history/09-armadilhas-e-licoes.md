@@ -57,6 +57,8 @@
 * O `perf` mostrou `vu1n::fmac` com 12,8% da CPU e parecia o alvo óbvio. Duas tentativas (inline forçado de `fmac`/`op_*`;
   caminho rápido sem conta em `double` quando o resultado é normal, 152.000 casos ainda idênticos) deram **0% de ganho**
   no benchmark (23,2 µs/chamada antes e depois).
-* Conta: ~4.700 pares em 23 µs = ~5 ns por par, já rápido. O VU1 pesa ~30% do tempo porque são ~8 mil chamadas por segundo,
-  não porque cada chamada seja lenta. Ganhar mais ali exige reduzir **chamadas** ou trabalho por par, não micro-otimizar.
+* Conta (corrigida depois de medir por fase dentro do jogo): eu tinha estimado ~5 ns por par a partir de UM caso de 4.700
+  pares; era errado. No jogo, cada chamada gasta ~25 µs só executando o programa (preparação 0,3 µs, escrita 0,06 µs,
+  entrega ao GS 1,2 µs) e faz ~800 ciclos: **~30 ns por par**. O custo está na execução gerada (confirmação de flags,
+  scoreboard), não na ponte nem na conta em `double`.
 * Regra: antes de otimizar uma função do perfil, dividir (tempo total ÷ chamadas) e comparar com o custo teórico.
