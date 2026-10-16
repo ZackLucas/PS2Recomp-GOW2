@@ -116,3 +116,17 @@ hardware**:
 
 ## A18. Linhas e leitura local->host não suportadas na GPU; 30–78 linhas por dump de gameplay
 * **Impacto:** baixo/médio (contornos ou efeitos pequenos podem faltar). Ver `unsupported lines` em `PS2_GS_GPU_STATS=1`.
+
+## A19. VU1 nativo vs PCSX2: primeiros casos de geometria diferem (descoberto 2026-10-16, **em andamento**)
+* **Método (funciona):** `games/gow2/scripts/pcsx2_vu1_inject.py` edita um savestate do PCSX2 (código/dados/registradores
+  do VU1, TPC, bit de execução em VU0.VI[29], TOP/ITOP do VIF1, EE em `b .`), carrega num PCSX2 privado (sem MTVU e sem
+  flag hack) e lê o `vu1Memory.bin` do novo estado. `pcsx2_vu1_batch.py` faz isso para vários vetores capturados e compara.
+  Offsets derivados de `vuMicroFreeze()` (VUmicroMem.cpp) e conferidos no savestate do menu.
+* **Resultados até a pausa:** caso trivial (contadores, 4 bytes): **idêntico**. Dois casos com geometria
+  (`in_5658e46f..._pc0_1`, `in_b952acb6..._pc0_1`): PCSX2 alterou 38 qwords, nosso interpretador 36; **248 bytes
+  (20 qwords) diferem**, e o nativo difere igual ao interpretador (o nativo reproduz o interpretador; a diferença é
+  interpretador vs PCSX2).
+* **Ainda não sei a causa:** pode ser diferença real de cálculo (arredondamento, flags, instrução) ou lacuna da
+  injeção (registradores/flags/pipelines que não injetei, micro_*flags). Próximo: ver quais qwords/campos diferem
+  (se são posições X/Y/Z, cores, ou contadores) e testar a hipótese dos flags iniciais.
+* Savestates, capturas e resultados ficam fora do repositório (`~/gow2/pcsx2-ref`, `/tmp/inj`).
