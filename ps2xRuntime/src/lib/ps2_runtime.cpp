@@ -27,6 +27,54 @@
 #include <thread>
 #include <unordered_map>
 #include <sstream>
+#include <map>
+#include <mutex>
+#include <cstdio>
+#include <cstdlib>
+
+namespace
+{
+    // PS2_VU1_CAPTURE=<dir>: save every distinct VU1 micro-memory image seen at MSCAL and count calls per
+    // (image, start PC). Used to catalogue the microprograms a game loads (input for native translation).
+    void vu1CaptureProgram(const uint8_t *code, uint32_t size, uint32_t startPC)
+    {
+        static const char *dir = std::getenv("PS2_VU1_CAPTURE");
+        if (!dir)
+            return;
+        static std::mutex mtx;
+        static std::map<uint64_t, std::map<uint32_t, uint64_t>> seen;
+        static uint64_t calls = 0;
+        uint64_t h = 1469598103934665603ull;
+        for (uint32_t i = 0; i < size; ++i)
+            h = (h ^ code[i]) * 1099511628211ull;
+        std::lock_guard<std::mutex> lock(mtx);
+        auto it = seen.find(h);
+        if (it == seen.end())
+        {
+            char path[512];
+            std::snprintf(path, sizeof path, "%s/vu1_%016llx.bin", dir, static_cast<unsigned long long>(h));
+            if (FILE *f = std::fopen(path, "wb"))
+            {
+                std::fwrite(code, 1, size, f);
+                std::fclose(f);
+            }
+            std::fprintf(stderr, "[vu1cap] new image %016llx (total %zu)\n", static_cast<unsigned long long>(h), seen.size() + 1);
+            it = seen.emplace(h, std::map<uint32_t, uint64_t>{}).first;
+        }
+        ++it->second[startPC];
+        if (++calls % 5000 == 0)
+        {
+            std::fprintf(stderr, "[vu1cap] calls=%llu images=%zu\n", static_cast<unsigned long long>(calls), seen.size());
+            for (const auto &im : seen)
+            {
+                std::fprintf(stderr, "[vu1cap]   image %016llx entries:", static_cast<unsigned long long>(im.first));
+                for (const auto &e : im.second)
+                    std::fprintf(stderr, " pc=%u:%llu", e.first, static_cast<unsigned long long>(e.second));
+                std::fprintf(stderr, "\n");
+            }
+        }
+    }
+}
 
 namespace ps2_stubs
 {
@@ -689,6 +737,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     vu1CaptureProgram(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, startPC);
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                    m_gs, &m_memory, startPC, top, itop, 65536);
