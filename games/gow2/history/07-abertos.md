@@ -135,3 +135,19 @@ hardware**:
   (dados que chegam por VIF/EE, matrizes calculadas pelo EE, ou carregamento do IOP).
 * **Como atacar:** achar o primeiro registrador/dado saturado na cadeia (qual programa VU1 o escreve, de qual memória
   vem) e comparar com o equivalente no PCSX2 (mesmo ponto do menu).
+
+## A21. MAC final do VU1: nativo e interpretador divergem em ~1,2% das chamadas ao vivo (2026-10-16) — **baixa prioridade**
+* **O que é:** `PS2_VU1_NATIVE_VERIFY=1` (nativo contra interpretador, por chamada, no jogo): 98,8% idênticas; memória
+  e pacotes 100%. A diferença está **só no registrador MAC** ao fim do programa (status, clip, Q, P, ACC, VI e VF
+  iguais). Offline (`gow2_vu1_prog_test`, `VU1_TAIL=1`) reproduz em 84 de 845 capturas (10%); o teste antigo nem
+  comparava MAC/status/clip/Q/P.
+* **Efeito:** nenhum na saída (só importa se o próximo programa ler o MAC antes de escrevê-lo).
+* **Não se resolve com o PCSX2:** o savestate dele devolve MAC=0 e status=cc0 (nem o nativo nem o interpretador:
+  fc1), ou seja, não guarda esses flags no mesmo formato. Sem referência, sem boa hipótese de qual lado está certo.
+* **Pista:** o rastreio por par mostra o MAC visível divergindo cedo porque o nativo confirma flags de forma preguiçosa
+  (só quando lidos); a diferença final (nativo 0004 = lane do último op, interpretador 0008 = op anterior) sugere ordem
+  de confirmação no fim do programa, mas não foi provado.
+
+## A22. `989 ERROR 84 0 0 0 0` no log (driver de som da IOP, 989snd)
+* Aparece com e sem GPU/VU1 nativo (4 a 6 vezes por execução). É o módulo de som do jogo reclamando de um comando;
+  provável SPU2/RPC de som não emulado. Não afeta imagem. Sem hipótese ainda.

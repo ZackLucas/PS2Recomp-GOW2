@@ -24,9 +24,9 @@ static std::vector<uint8_t> readFile(const char *path)
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
-struct Trace { std::vector<uint32_t> pairs; };
-static void nativeTrace(void *c, uint32_t pair, const vu1n::State *) { static_cast<Trace *>(c)->pairs.push_back(pair); }
-static void interpTrace(void *c, uint32_t pc, const VU1State &) { static_cast<Trace *>(c)->pairs.push_back(pc / 8); }
+struct Trace { std::vector<uint32_t> pairs; std::vector<uint32_t> mac; };
+static void nativeTrace(void *c, uint32_t pair, const vu1n::State *s) { static_cast<Trace *>(c)->pairs.push_back(pair); static_cast<Trace *>(c)->mac.push_back(s ? s->mac : 0); }
+static void interpTrace(void *c, uint32_t pc, const VU1State &s) { static_cast<Trace *>(c)->pairs.push_back(pc / 8); static_cast<Trace *>(c)->mac.push_back(s.mac); }
 
 struct Packets
 {
@@ -43,7 +43,7 @@ int main(int argc, char **argv)
     gs.init(mem.getGSVRAM(), static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &mem.gs());
     std::vector<uint8_t> code(PS2_VU1_CODE_SIZE, 0), data(PS2_VU1_DATA_SIZE), nmem(PS2_VU1_DATA_SIZE);
     VU1Interpreter vu;
-    int cases = 0, noncomparable = 0, equal = 0, badMem = 0, badRegs = 0, badPkt = 0, nativeExit = 0, interpBudget = 0;
+    int badFlags = 0, cases = 0, noncomparable = 0, equal = 0, badMem = 0, badRegs = 0, badPkt = 0, nativeExit = 0, interpBudget = 0;
     long pktsTotal = 0;
     double benchInterp = 0, benchNative = 0;
     long benchCalls = 0;
@@ -142,6 +142,27 @@ int main(int argc, char **argv)
         const bool memOk = std::memcmp(nmem.data(), data.data(), data.size()) == 0;
         bool regsOk = std::memcmp(a.vf, st.vf, sizeof(a.vf)) == 0 && std::memcmp(a.acc, st.acc, 16) == 0;
         for (int r = 0; r < 16; ++r) regsOk = regsOk && a.vi[r] == st.vi[r];
+        const bool flagsOk = a.mac == st.mac && a.status == st.status && a.clip == st.clip && std::memcmp(&a.q, &st.q, 4) == 0 && std::memcmp(&a.p, &st.p, 4) == 0;
+        if (!flagsOk && getenv("VU1_TAIL") && badFlags < 3)
+        {
+            size_t k = 0;
+            while (k < tn.mac.size() && k < ti.mac.size() && tn.mac[k] == ti.mac[k]) ++k;
+            std::printf("MACDIV %s: first visible-MAC difference at step %zu of %zu (pair %d): native %04x interp %04x; previous steps:", argv[ai], k, ti.mac.size(), k < ti.pairs.size() ? (int)ti.pairs[k] : -1, k < tn.mac.size() ? tn.mac[k] & 0xFFFF : 0, k < ti.mac.size() ? ti.mac[k] & 0xFFFF : 0);
+            for (size_t q = k > 8 ? k - 8 : 0; q < k && q < ti.pairs.size(); ++q)
+            {
+                uint32_t lo, hi; std::memcpy(&lo, code.data() + ti.pairs[q] * 8, 4); std::memcpy(&hi, code.data() + ti.pairs[q] * 8 + 4, 4);
+                std::printf(" [pair %u upper=%08x lower=%08x mac=%04x]", ti.pairs[q], hi, lo, ti.mac[q] & 0xFFFF);
+            }
+            std::printf("\n");
+            std::printf("TAIL %s last pairs (interp):", argv[ai]);
+            for (size_t q = ti.pairs.size() > 16 ? ti.pairs.size() - 16 : 0; q < ti.pairs.size(); ++q)
+            {
+                uint32_t lo, hi; std::memcpy(&lo, code.data() + ti.pairs[q] * 8, 4); std::memcpy(&hi, code.data() + ti.pairs[q] * 8 + 4, 4);
+                std::printf(" [pair %u upper=%08x lower=%08x]", ti.pairs[q], hi, lo);
+            }
+            std::printf("\n");
+        }
+        if (!flagsOk) { ++badFlags; if (badFlags <= 8) std::printf("FLAGS %s: mac init=%04x native=%04x interp=%04x | status %x/%x| clip %x/%x | q %d p %d\n", argv[ai], init.mac & 0xFFFF, a.mac & 0xFFFF, st.mac & 0xFFFF, a.status, st.status, a.clip, st.clip, std::memcmp(&a.q, &st.q, 4) != 0, std::memcmp(&a.p, &st.p, 4) != 0); }
         const bool pktOk = pn.list == pi.list;
         pktsTotal += static_cast<long>(pi.list.size());
         badMem += !memOk; badRegs += !regsOk; badPkt += !pktOk;
@@ -163,6 +184,7 @@ int main(int argc, char **argv)
     const int comparable = cases - noncomparable;
     std::printf("cases %d: comparable %d (interp hit budget %d, native left translated area %d), %ld packets\n", cases, comparable, interpBudget, nativeExit, pktsTotal);
     std::printf("  identical (memory + registers + packets): %d  (%.1f%%)\n", equal, comparable ? 100.0 * equal / comparable : 0.0);
+    std::printf("  flag/Q/P register mismatches: %d\n", badFlags);
     std::printf("  mismatches: memory %d, registers %d, XGKICK packets %d\n", badMem, badRegs, badPkt);
     if (benchCalls) std::printf("BENCH %ld calls: interpreter %.2f us/call, native %.2f us/call (x%.1f faster)\n", benchCalls, 1e6 * benchInterp / benchCalls, 1e6 * benchNative / benchCalls, benchInterp / benchNative);
     return 0;

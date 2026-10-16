@@ -159,11 +159,19 @@ void Vu1NativeBridge::verify(VU1Interpreter &vu, GS &gs, const uint8_t *code, ui
     }
     const VU1State &r = m_ref.state();
     const bool memOk = std::memcmp(nativeMem.data(), m_refData.data(), dataSize) == 0;
-    bool regsOk = std::memcmp(a.vf, r.vf, sizeof(a.vf)) == 0 && std::memcmp(a.acc, r.acc, sizeof(a.acc)) == 0 &&
-                  std::memcmp(&a.q, &r.q, 4) == 0 && std::memcmp(&a.p, &r.p, 4) == 0 && a.mac == r.mac &&
-                  a.status == r.status && a.clip == r.clip;
+    static uint64_t fieldCount[6 + 16 + 32];
+    bool regsOk = true;
+    auto note = [&](bool same, int field) { if (!same) { regsOk = false; ++fieldCount[field]; } };
+    note(std::memcmp(a.acc, r.acc, sizeof(a.acc)) == 0, 0);
+    note(std::memcmp(&a.q, &r.q, 4) == 0, 1);
+    note(std::memcmp(&a.p, &r.p, 4) == 0, 2);
+    note(a.mac == r.mac, 3);
+    note(a.status == r.status, 4);
+    note(a.clip == r.clip, 5);
     for (int k = 0; k < 16; ++k)
-        regsOk = regsOk && a.vi[k] == r.vi[k];
+        note(a.vi[k] == r.vi[k], 6 + k);
+    for (int k = 0; k < 32; ++k)
+        note(std::memcmp(a.vf[k], r.vf[k], 16) == 0, 22 + k);
     const bool pktOk = nativePackets == refPackets;
     if (memOk && regsOk && pktOk)
         ++m_stats.identical;
@@ -176,6 +184,16 @@ void Vu1NativeBridge::verify(VU1Interpreter &vu, GS &gs, const uint8_t *code, ui
         if (shown++ < 8)
             std::fprintf(stderr, "[VU1 verify] differs: pc=%u mem=%d regs=%d packets=%d (native %zu, ref %zu)\n", startPC,
                          memOk, regsOk, pktOk, nativePackets.size(), refPackets.size());
+    }
+    if ((m_stats.verified & 0x3FFF) == 0)
+    {
+        std::fprintf(stderr, "[VU1 verify] differing fields: acc=%llu q=%llu p=%llu mac=%llu status=%llu clip=%llu vi:",
+                     (unsigned long long)fieldCount[0], (unsigned long long)fieldCount[1], (unsigned long long)fieldCount[2],
+                     (unsigned long long)fieldCount[3], (unsigned long long)fieldCount[4], (unsigned long long)fieldCount[5]);
+        for (int k = 0; k < 16; ++k) if (fieldCount[6 + k]) std::fprintf(stderr, " vi%d=%llu", k, (unsigned long long)fieldCount[6 + k]);
+        std::fprintf(stderr, " vf:");
+        for (int k = 0; k < 32; ++k) if (fieldCount[22 + k]) std::fprintf(stderr, " vf%d=%llu", k, (unsigned long long)fieldCount[22 + k]);
+        std::fprintf(stderr, "\n");
     }
     if ((m_stats.verified & 0x3FF) == 0)
         std::fprintf(stderr, "[VU1 verify] calls=%llu identical=%llu badMem=%llu badRegs=%llu badPackets=%llu notComparable=%llu\n",
