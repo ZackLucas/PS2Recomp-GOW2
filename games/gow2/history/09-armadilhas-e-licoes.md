@@ -36,3 +36,19 @@
 * **Ler o código do PCSX2** quando a medição aponta o ponto exato; confirmar com sonda depois.
 * **Passos curtos, commit e push a cada peça; relatar o que *não* foi provado**.
 * **Test-first no modelo**: a sonda vira teste de regressão do comportamento.
+* **Método do usuário: montar o quebra-cabeça, peça a peça.** Primeiro criar cada peça nativa e medir contra a referência
+  (PCSX2/interpretador); só depois refinar. **Não** transformar a peça em caça a um defeito do jogo (levei bronca por isso
+  em 16/10). Meta de aceitação da peça: >=95% igual ao original.
+* **Unidade de tradução do VU1 é o segmento (hash do conteúdo), não a "imagem":** só há uma memória de código; traduzir 142
+  imagens inteiras custava 1 min e 2 GB cada. Por segmento de 64 pares: 173 funções, build em 47 s com -j12 e cache.
+* **Testar o interpretador exige invalidar o cache de decodificação** (passar `memory=nullptr` ou bumpar a geração).
+* **Flags/Q/P do VU não bloqueiam leitura e têm latência** (FMAC 4 ciclos): código do jogo lê o MAC "velho" no mesmo par.
+  Escrita imediata dá 0% idêntico; o rastro da sequência de pares localizou o ponto exato.
+* **Entradas patológicas (registradores saturados) não servem para comparar semântica** com o PCSX2; usar o estado do
+  próprio PCSX2 como entrada sã.
+* **Injeção em savestate do PCSX2:** TPC + bit 8 de VU0.VI[29] + start_pc, VIF1 TOP/ITOP no `eeHwRegs.bin` (0x3CE0/0x3CD0),
+  EE em `b .` para o jogo não sobrescrever a memória do VU1; MTVU e flag hack desligados no diretório privado.
+* **`/tmp` é apagado no reinício:** dados do oráculo e resultados em `~/gow2`, não em `/tmp`.
+* **SSH porta 22 pode ficar bloqueada:** `GIT_SSH_COMMAND='ssh -p 443 -o HostName=ssh.github.com -o HostKeyAlias=github.com' git push ...`
+  (usa a chave já confiável de github.com; não altera configuração nem aceita chave nova).
+

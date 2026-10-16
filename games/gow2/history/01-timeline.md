@@ -49,3 +49,13 @@ Para os commits anteriores, ver `git log` das branches `gow2` e `gow2-gpu-gs`.
 * Profiling do jogo vivo (`perf`): VU1 ~36%, GS CPU ~22%, escalonador IOP ~12%.
 * GPU ligada ao runtime (`PS2_GS_BACKEND=gpu`), commit `ed66930`. Fundo do menu continua ausente: causa fora do GS (A16).
 * Erro meu: `kill_all` matou o PCSX2 do usuário; corrigido (`88e4786`).
+
+### 2026-10-16 (tarde/noite): VU1 nativo
+* Capturados 142 estados da memória de código do VU1 (2 núcleos fixos + trechos trocáveis); entradas reais (845 chamadas).
+* Semântica nativa (superior e inferior) validada por instrução contra o interpretador: 152.000 casos, 100%.
+* Gerador de C++ por segmento + despachante: 845/845 chamadas idênticas, 5,5x mais rápido.
+* Oráculo PCSX2 para VU1 por injeção em savestate: 6/6 idênticos (interpretador e nativo). Entradas capturadas do nosso
+  runtime divergem só por estarem saturadas (A20), não por erro do VU1.
+* Erros meus: voltei a caçar a causa de um defeito quando o método é montar peças (corrigido); recompilei 1 imagem por
+  vez (custo); `/tmp` perdido no reinício (dados do oráculo passaram a `~/gow2`).
+

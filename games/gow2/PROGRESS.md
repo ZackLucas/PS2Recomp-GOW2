@@ -1,6 +1,12 @@
 # God of War II (SCUS_974.81) — Progresso e próximos passos
 
 > **Estado atual (2026-10-16) — leia isto primeiro.**
+> * **Marco (2026-10-16): VU1 nativo.** Os microprogramas do VU1 do GoW2 são traduzidos para C++ por um gerador
+>   (`tools/vu1_gen.cpp`) e **batem byte a byte com o PCSX2** (6/6 casos, interpretador e nativo) e com o nosso
+>   interpretador (845/845 chamadas reais, 142 imagens); ~5,5x mais rápido. **Ainda não ligado ao runtime.**
+>   Detalhes: seção "VU1 nativo" no fim deste arquivo e `history/07` A19/A20.
+> * **Pista aberta (A20):** 844 de 845 chamadas capturadas do nosso runtime começam com registradores do VU1 saturados;
+>   o VU1 está correto, o lixo vem de antes (VIF/EE/IOP). É refinamento: o método é montar peças e validar cada uma.
 > * **Novo:** GPU GS ligada ao runtime (`PS2_GS_BACKEND=gpu`), commit `ed66930`; menu vivo igual ao CPU, ~3–3,5 VSync/s.
 >   O fundo do menu ainda **não aparece ao vivo** (CPU e GPU): causa fora do GS (`history/07` A16) — próximo alvo.
 >   Perfil ao vivo: VU1 36%, GS CPU 22%, escalonador IOP ~12% (A17). 19 dumps de gameplay em `~/gow2/pcsx2-ref/gameplay`.
@@ -489,3 +495,35 @@ Medido contra o PCSX2 (região 512x214, erro médio abs por canal / % de pixels 
 3. Metade de baixo do quadro (a janela só mostra ~214 linhas em modo progressivo): validar por outra via.
 4. Auto-realimentação na GPU: instantâneo da textura (cópia do buffer) para primitivas que leem o próprio destino.
 5. Depois: otimizar a GPU (~12 ms/quadro) e ligar o `GpuGsExecutor` ao `ps2EntryRunner`.
+
+## VU1 nativo (16/10/2026)
+
+**Objetivo:** o VU1 deixa de ser interpretado ao vivo (36% do tempo) e vira código nativo, como o EE. Os microprogramas
+do VU1 não estão no ELF (o jogo os envia pela VIF), então a tradução parte do que o jogo carrega.
+
+**Como o jogo usa o VU1 (capturado com `PS2_VU1_CAPTURE`):** só existe **uma** memória de código de 16 KB; as 142
+"imagens" capturadas são estados dela ao longo do tempo. Dois núcleos fixos (famílias 0 e 1) e uma cauda de trechos
+trocáveis (5 slots de 72 instruções, 24 trechos distintos, mais uma região do meio com ~47 variantes). Entradas usadas: PC 0/24/48.
+
+**Peças (todas com teste contra a referência):**
+* `ps2xRuntime/include/runtime/ps2_vu1_native.h`: semântica nativa de todas as instruções (superior: FMAC, MAX/MINI, ITOF/FTOI,
+  ABS, CLIP; inferior: LQ/SQ, inteiros, flags, DIV/SQRT/RSQRT, EFU, R, XGKICK) + **modelo de tempo do interpretador** (filas
+  de flags/Q/P com latência, placar de prontidão por registrador, leitura "velha" do VI em desvio). Teste por instrução
+  `gow2_vu1_native_test`: **152.000 casos, 100%** contra `VU1Interpreter`.
+* `tools/vu1_gen.cpp`: gera C++ **por segmento de 64 pares** (173 funções pequenas cobrem as 142 imagens, 4,9 MB) + registro
+  por hash do conteúdo + despachante `vu1n::SegTable/runProgram`. Saída em `~/gow2/vu1gen` (fora do git: derivada do jogo).
+* `tools/vu1_prog_test.cpp`: programa inteiro, cada chamada real contra a sua imagem: **845/845 idênticas** (memória,
+  registradores, pacotes GIF). `VU1_BENCH=N`: nativo **22,7 µs vs 125 µs** por chamada (**5,5x**).
+* `tools/vu1_run_one.cpp` / `vu1_ss_test.cpp`: roda uma chamada capturada (interp + nativo) e grava a memória.
+* **Oráculo PCSX2 para o VU1:** `scripts/pcsx2_vu1_inject.py` edita um savestate (VU1 código/dados/regs, TPC, bit de execução
+  em VU0.VI[29], TOP/ITOP, EE em `b .`), carrega num PCSX2 privado (sem MTVU/flag hack) e lê o novo `vu1Memory.bin`;
+  `pcsx2_vu1_batch.py` em lote; `vu1_ss_inputs.py` usa o estado do próprio PCSX2 como entrada sã. Offsets de `vuMicroFreeze()`.
+  **Resultado: 6/6 idênticos ao PCSX2, interpretador e nativo.**
+
+**Como rodar:** gerar `gow2_vu1_gen ~/gow2/vu1gen <imagens>`; `cmake -DGOW2_VU1_GEN_DIR=~/gow2/vu1gen`; `ninja gow2_vu1_prog_test`
+(47 s com -j12; só refaz o que mudou). Dados fora do git: `~/gow2/pcsx2-ref/{vu1progs,sstates,inj}`.
+
+**Próximos passos (peça a peça):** (1) ligar o VU1 nativo ao runtime (usar nativo quando o segmento é conhecido, cair no
+interpretador senão; cache do hash por geração do código); (2) medir o ganho real ao vivo; (3) só depois, refinar (A20,
+fundo do menu, IOP, GS). Decisão do usuário: PCSX2 antes de ligar ao runtime (feito).
+
