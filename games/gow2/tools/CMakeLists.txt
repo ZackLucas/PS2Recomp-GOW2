@@ -69,3 +69,8 @@ if(TARGET ps2EntryRunner AND GOW2_EGL_LIB AND GOW2_GL_LIB)
         COMPILE_DEFINITIONS "GOW2_GLFW_CONTEXT=1;GOW2_SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\"")
     target_link_libraries(ps2EntryRunner PRIVATE ${GOW2_EGL_LIB} ${GOW2_GL_LIB})
 endif()
+
+# Native VU1 upper-unit semantics (ps2_vu1_native.h) vs VU1Interpreter, per instruction.
+add_executable(gow2_vu1_native_test vu1_native_test.cpp)
+target_include_directories(gow2_vu1_native_test PRIVATE ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
+target_link_libraries(gow2_vu1_native_test PRIVATE ps2_runtime)
