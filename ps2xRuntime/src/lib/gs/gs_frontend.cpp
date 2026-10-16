@@ -598,7 +598,8 @@ void GS::latchHostPresentationFrame()
     if (const char *vd = std::getenv("PS2_GS_VRAMDUMP"))
     {
         static uint32_t n = 0;
-        if (++n == 200 && m_backend)
+        static const uint32_t dumpAt = std::getenv("PS2_GS_VRAMDUMP_AT") ? std::atoi(std::getenv("PS2_GS_VRAMDUMP_AT")) : 200;
+        if (++n == dumpAt && m_backend)
         {
             std::vector<uint8_t> v;
             {
@@ -1647,6 +1648,23 @@ void GS::vertexKick(bool drawing)
             if (m_prim.tme)
             {
                 const GSContext &c = batch.state.context;
+                {
+                    static const int bgDump = std::getenv("PS2_GS_BGDUMP") ? std::atoi(std::getenv("PS2_GS_BGDUMP")) : 0;
+                    static int bgN = 0;
+                    if (bgDump > 0 && c.frame.fbp == 8 && c.tex0.tw == 9 && c.tex0.th == 9 && bgN < bgDump)
+                    {
+                        ++bgN;
+                        std::fprintf(stderr, "[bgdump] #%d type=%d fst=%d tbp0=0x%x tbw=%u psm=0x%x tcc=%u tfx=%u clamp=%016llx abe=%d\n", bgN,
+                                     (int)m_prim.type, (int)m_prim.fst, c.tex0.tbp0, c.tex0.tbw, c.tex0.psm, c.tex0.tcc, c.tex0.tfx,
+                                     (unsigned long long)c.clamp, (int)m_prim.abe);
+                        for (int i = 0; i < batch.vertexCount; ++i)
+                        {
+                            const GSVertex &v = batch.vertices[i];
+                            std::fprintf(stderr, "[bgdump]   v%d xy=(%.2f,%.2f) z=%.0f st=(%.5f,%.5f) q=%.5f uv=(%u,%u) rgba=%02x%02x%02x%02x\n", i,
+                                         v.x, v.y, v.z, v.s, v.t, v.q, v.u, v.v, v.r, v.g, v.b, v.a);
+                        }
+                    }
+                }
                 char key[96];
                 std::snprintf(key, sizeof key, "fbp=0x%x tbp0=0x%x tpsm=0x%x %ux%u cbp=0x%x", c.frame.fbp, c.tex0.tbp0,
                               c.tex0.psm, 1u << c.tex0.tw, 1u << c.tex0.th, c.tex0.cbp);
