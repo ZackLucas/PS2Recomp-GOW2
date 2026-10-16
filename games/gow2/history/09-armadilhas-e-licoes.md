@@ -62,3 +62,24 @@
   entrega ao GS 1,2 µs) e faz ~800 ciclos: **~30 ns por par**. O custo está na execução gerada (confirmação de flags,
   scoreboard), não na ponte nem na conta em `double`.
 * Regra: antes de otimizar uma função do perfil, dividir (tempo total ÷ chamadas) e comparar com o custo teórico.
+
+
+## Achar a origem de um valor ruim: assinatura + primeira operação que o cria (2026-10-16)
+* O fundo preto vinha de NaN nas matrizes. Em vez de perseguir o VU1 (que estava correto), **comparei uma assinatura com a
+  referência**: palavras `0xFFC00000` na memória do VU1, 0 no PCSX2 e 127 por chamada nas nossas. Isso apontou que o valor
+  entra como bits crus, ou seja, vem do EE (o VU1 não cria NaN na própria aritmética).
+* Depois **instrumentei só a primeira operação que cria NaN/Inf a partir de entradas finitas** e guardei o endereço do
+  chamador (`__builtin_return_address`, offset em relação a uma função conhecida, `nm` para o nome). Em um único run saíram as
+  funções do jogo exatas e as operações (SQRT.S de negativo, VMUL com estouro).
+* Regra do hardware conferida no PCSX2 antes de implementar (ler para entender, reimplementar); teste da peça (30 casos) e
+  a mesma medição depois (107.319 -> 0).
+* **Macros que avaliam o argumento duas vezes** (ao envolver `FPU_ADD_S(a, b)` num checador) quebram com expressões
+  aninhadas e custam; trocar por funções inline `always_inline`.
+
+## Comparar velocidades quando a carga muda (2026-10-16)
+* Depois do conserto do fundo, a mesma configuração ficou **mais lenta** (12,0 -> 6,0 vsync/s) porque o GS agora desenha o
+  fundo inteiro e o VU1 faz menos chamadas, maiores. Tabelas de velocidade precisam dizer **qual carga** foi medida; os
+  ganhos de cada peça só se comparam dentro da mesma carga (build, cena, variáveis).
+* Medir por fase (preparação, execução, escrita, entrega) antes de otimizar; a ponte parecia suspeita e custava 6% do total.
+* `perf annotate` pode travar em binários grandes: usar `perf script -F ip,sym` + histograma de endereços e `objdump`.
+* Com a máquina livre, `ninja -j<núcleos>` sem `nice`; reiniciar o build é barato (objetos prontos ficam).

@@ -1,16 +1,27 @@
 # God of War II (SCUS_974.81) — Progresso e próximos passos
 
-> **Estado atual (2026-10-16) — leia isto primeiro.**
-> * **Marco (2026-10-16): VU1 nativo.** Os microprogramas do VU1 do GoW2 são traduzidos para C++ por um gerador
->   (`tools/vu1_gen.cpp`) e **batem byte a byte com o PCSX2** (6/6 casos, interpretador e nativo) e com o nosso
->   interpretador (845/845 chamadas reais, 142 imagens); ~5,5x mais rápido. **Ainda não ligado ao runtime.**
->   Detalhes: seção "VU1 nativo" no fim deste arquivo e `history/07` A19/A20.
-> * **Pista aberta (A20):** 844 de 845 chamadas capturadas do nosso runtime começam com registradores do VU1 saturados;
->   o VU1 está correto, o lixo vem de antes (VIF/EE/IOP). É refinamento: o método é montar peças e validar cada uma.
-> * **Novo:** GPU GS ligada ao runtime (`PS2_GS_BACKEND=gpu`), commit `ed66930`; menu vivo igual ao CPU, ~3–3,5 VSync/s.
->   O fundo do menu ainda **não aparece ao vivo** (CPU e GPU): causa fora do GS (`history/07` A16) — próximo alvo.
->   Perfil ao vivo: VU1 36%, GS CPU 22%, escalonador IOP ~12% (A17). 19 dumps de gameplay em `~/gow2/pcsx2-ref/gameplay`.
+> **Estado atual (2026-10-16, fim do dia) — leia isto primeiro.**
+> * **Marco: o fundo do menu aparece ao vivo.** Causa achada e corrigida: o FPU do EE (COP1) e o VU0 em modo macro seguiam
+>   IEEE puro; o PS2 não tem NaN/Inf. `SQRT.S` de número negativo dava NaN (o PS2 usa o valor absoluto) e um `VMUL` do VU0
+>   estourava para Inf (o PS2 satura em Fmax); isso contaminava as matrizes enviadas ao VU1. Peça nova:
+>   `ps2xRuntime/include/ps2_ee_fp.h` + teste `tools/ee_fp_test.cpp` (30 casos). Medido: palavras `0xFFC00000` na memória do
+>   VU1 107.319 -> 0; chamadas com >=3 VF saturados 95% -> 11%. O fundo agora desenha textura vermelha/laranja, **mas
+>   ainda não parece o rosto do Kratos do PCSX2** (próxima peça: textura/coordenadas do fundo). `history/07` A20 (resolvido).
+> * **VU1 nativo ligado ao runtime** (`PS2_VU1_NATIVE=<libgow2_vu1_native_plugin.so>`, plugin por `dlopen` para o C++ gerado
+>   ficar fora do git; fallback automático para o interpretador). Verificação ao vivo (`PS2_VU1_NATIVE_VERIFY=1`, 160 mil
+>   chamadas): 98,8% idênticas, memória e pacotes 100%; só o registrador MAC final diverge em ~1,2% (A21, sem efeito na saída).
+> * **Velocidade ao vivo (menu, VSync/s; 1/60 do tempo real = 1,0).** Mesma carga, build atual (fundo desenhando):
+>   interpretador+GS CPU **1,0** -> VU1 nativo+GS CPU **1,5** -> interpretador+GS GPU **3,0** -> **VU1 nativo+GS GPU 6,0**
+>   (6x no total; os dois ganhos somam). Carga anterior (fundo quebrado, menos pixels): 2,0 -> 3,5 -> 9,5 (nativo+GPU) -> **12,0**
+>   com o agendador da IOP novo (`iop_kernel.cpp`, +26%). Os números caíram depois do conserto porque o GS agora desenha o
+>   fundo inteiro e o VU1 faz menos chamadas, porém maiores (670/vsync de ~2.000 ciclos, antes 2.400 de ~530).
+> * **Onde o tempo vai agora:** VU1 nativo ~25-30 ns por par (a execução gerada, não a ponte: preparação 0,3 µs, entrega
+>   ao GS 1,2 µs por chamada); GS GPU ~15% (`GpuGsExecutor::submit`); VIF1 ~5%; IOP ~4% (era 27%).
+>   Duas otimizações do `fmac` não deram ganho (medido), ver `history/09`.
+> * Pistas abertas: A21 (MAC final), A22 (`989 ERROR 84`, driver de som), 11% de chamadas ainda com VF saturados,
+>   FPU do EE sem flags/arredondamento para zero/`CVT.W.S` saturado (refinamentos).
 > * Histórico completo de problemas (resolvidos, contornados, abertos, com impacto): [`history/`](history/README.md).
+> * Antigo (anterior ao marco acima, mantido para contexto): GPU GS ligada ao runtime (`PS2_GS_BACKEND=gpu`), commit `ed66930`.
 > * Menu do jogo roda no runtime com controle, a ~3% da velocidade (GS por software domina).
 > * GS em GPU (VRAM como buffer) validado contra o modelo CPU e **a ~0,8 de erro médio por canal do PCSX2** na metade
 >   superior do quadro do menu (exato), vindo de 11,6; **não está ligado ao runtime**.
@@ -527,3 +538,29 @@ trocáveis (5 slots de 72 instruções, 24 trechos distintos, mais uma região d
 interpretador senão; cache do hash por geração do código); (2) medir o ganho real ao vivo; (3) só depois, refinar (A20,
 fundo do menu, IOP, GS). Decisão do usuário: PCSX2 antes de ligar ao runtime (feito).
 
+
+## VU1 nativo no runtime, FPU do EE e fundo do menu (16/10/2026, noite)
+
+**Como rodar com tudo ligado**
+```bash
+# plugin do VU1 (precisa de ~/gow2/vu1gen gerado por gow2_vu1_gen e -DGOW2_VU1_GEN_DIR=~/gow2/vu1gen)
+ninja -j12 gow2_vu1_native_plugin ps2EntryRunner     # em build-o2; export PATH=$HOME/gow2/tools/bin:$PATH
+cd ~/gow2 && PS2_GS_BACKEND=gpu PS2_VU1_NATIVE=<build-o2>/games/gow2/tools/libgow2_vu1_native_plugin.so \
+  PS2_PERF_STATS=1 PS2_HIDE_DEBUG_UI=1 <build-o2>/ps2xRuntime/ps2EntryRunner SCUS_974.81 "<iso>"
+```
+Variáveis úteis: `PS2_VU1_NATIVE_VERIFY=1` (nativo contra interpretador por chamada), `PS2_VU1_NATIVE_STATS=1`,
+`PS2_PERF_STATS=1` (vsync/s e, com o plugin, chamadas/pacotes/bytes/ciclos por vsync, por PC de entrada, e ns por fase),
+`PS2_SCREENSHOT_EVERY=N` (frame_NNNNNN.png no diretório atual), `PS2_VU1_CAPTURE=<dir>` + `PS2_VU1_CAPTURE_IMAGE=all`.
+
+**Peças e números**
+| Peça | Resultado |
+|---|---|
+| Ponte VU1 nativo (`ps2_vu1_native_bridge.*`) | 100% das chamadas nativas no menu (0 desconhecidas); fallback com desfazer da memória |
+| Verificação ao vivo | 98,8% idênticas; memória 0 diferenças; pacotes 0 diferenças; só MAC final (A21) |
+| Agendador IOP (vetor contíguo, uma passada) | 9,5 -> 12,0 vsync/s (carga anterior), mesma saída da IOP (hash igual) |
+| FPU/VU0-macro do EE (`ps2_ee_fp.h`) | NaN `0xFFC00000` 107.319 -> 0; VF saturados 95% -> 11%; fundo deixa de ser preto |
+
+**Como a origem foi achada (método reutilizável):** (1) comparar uma assinatura com a referência (memória do VU1 no PCSX2 tem 0
+palavras `0xFFC00000`; a nossa, 127 por chamada); (2) instrumentar o ponto suspeito para registrar só a *primeira operação que cria*
+um valor ruim a partir de entradas boas, com o endereço do chamador (`__builtin_return_address`) mapeado por `nm`;
+(3) conferir a regra do PS2 no PCSX2 (ler, reimplementar); (4) teste da peça + medir o mesmo número depois.

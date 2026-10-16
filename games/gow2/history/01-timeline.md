@@ -59,3 +59,13 @@ Para os commits anteriores, ver `git log` das branches `gow2` e `gow2-gpu-gs`.
 * Erros meus: voltei a caçar a causa de um defeito quando o método é montar peças (corrigido); recompilei 1 imagem por
   vez (custo); `/tmp` perdido no reinício (dados do oráculo passaram a `~/gow2`).
 
+
+### 2026-10-16 (noite): VU1 nativo ligado, IOP, FPU do EE, fundo do menu
+* VU1 nativo ligado ao runtime (plugin `dlopen`), verificação ao vivo 98,8% (MAC final diverge, A21). Menu: 2,0 -> 3,5 -> 9,5 vsync/s (nativo, GPU).
+* Agendador da IOP: 3-4 varreduras de `std::map` por fatia viraram um vetor contíguo: 9,5 -> 12,0 vsync/s.
+* Duas tentativas de otimizar `fmac` sem ganho; medição por fase mostrou que o custo é a execução gerada (~30 ns por par).
+* Pista A20 virou causa: NaN `0xFFC00000` (107 mil palavras) vindo do EE; `SQRT.S` de negativo e `VMUL` do VU0 com IEEE puro.
+  Peça `ps2_ee_fp.h`: NaN 107 mil -> 0, fundo do menu deixa de ser preto (commit `bcae549`). Velocidade na nova carga: 1,0 / 1,5 / 3,0 / 6,0.
+* Erros meus: duas hipóteses de otimização erradas (inline e caminho rápido do `fmac`) e uma conta de 5 ns por par a partir
+  de um único caso (corrigida); `perf annotate` travou no binário grande (usei histograma de endereços); compilei com `-j8`
+  e `nice` com a máquina livre (reiniciei com `-j12`).
