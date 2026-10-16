@@ -3,7 +3,10 @@
 Cada item: **o que é**, **por que não foi resolvido**, **quanto afeta**, **como atacar**.
 Ordem aproximada por impacto no objetivo (jogo nativo, correto, em tempo real).
 
-## A1. GPU não está ligada ao runtime (o jogo ao vivo roda a ~3%)
+## A1. GPU ligada ao runtime, mas o jogo vivo ainda roda a ~3–4 VSync/s (parcialmente resolvido 2026-10-16)
+* **Feito:** `PS2_GS_BACKEND=gpu` (`gs_gpu_backend.cpp`, thread própria com contexto GL via janela GLFW oculta). Ver 03 (G11).
+* **Falta:** os 36% de VU1 e ~12% do escalonador do IOP dominam; ~340 draws/quadro com splits por hazard; sem teste de gameplay vivo.
+* **(texto original abaixo)**
 * **Por quê:** priorizei validar a correção do GS antes de integrar; faltam contexto EGL próprio no
   `ps2EntryRunner`, leitura do quadro para o raylib, e otimizar desenhos (~12 ms/quadro).
 * **Impacto:** **alto** — é o que torna o jogo jogável.
@@ -91,3 +94,21 @@ hardware**:
 * regra de borda inclusiva com `eps = 1e-4` (parcialmente superada pela regra top-left, R3).
 * **Impacto:** *médio-desconhecido*. **Como atacar:** uma sonda sintética por item, comparando com o PCSX2.
   O CLUT T8/T4 já foi provado 100% idêntico em dumps sintéticos (CSM1, CT32), mas não todos os ramos.
+
+## A16. Fundo do menu ausente no jogo vivo (descoberto 2026-10-16)
+* **O que é:** ao vivo (CPU **e** GPU) o menu mostra só logo e texto sobre preto; o replay do dump do PCSX2 mostra
+  o retrato do Kratos e o pano vermelho. A imagem também sai pequena (512x448 sem escala) e `flips/s=0.0`.
+* **Por quê não resolvido:** só descartei o GS (GPU e CPU dão o mesmo). Candidatos: lacuna do IOP (dados não
+  carregados), erro no VU1, fade-in lento a 3 VSync/s. Não separados.
+* **Impacto:** **alto** (a imagem do jogo vivo está errada) e é o próximo alvo.
+* **Como atacar:** gravar um dump de GS gerado pelo runtime (formato lido por `gs_replay`) e achar a primeira
+  diferença contra o dump do PCSX2 (falta textura, primitiva ou upload).
+
+## A17. Escalonador do IOP percorre `std::map` a cada fatia (~12% do tempo ao vivo)
+* **O que é:** `IopKernel::beginNextReady`/`nextWakeCycle` varrem `m_threads` (std::map) várias vezes por fatia;
+  o `perf` mostra `_Rb_tree_increment` com 9% + 3,5% nas duas funções. Chamador do `_Rb_tree` **não confirmado**.
+* **Impacto:** médio (até ~12% de velocidade). **Como atacar:** manter fila de prontas/ordenada por acordar,
+  confirmar com novo `perf` (`perf_event_paranoid` precisou ser liberado pelo usuário).
+
+## A18. Linhas e leitura local->host não suportadas na GPU; 30–78 linhas por dump de gameplay
+* **Impacto:** baixo/médio (contornos ou efeitos pequenos podem faltar). Ver `unsupported lines` em `PS2_GS_GPU_STATS=1`.

@@ -28,3 +28,10 @@ O PCSX2 v2.9.127 (AppImage, renderizador por software, `Renderer = 13`) com BIOS
   `spr_up_*`, `spr_lin<N>`, `spr_ramp<N>`, `spr_zero`, `spr_min`, `*_upload`, etc.
 * `gs_gpu_replay` (env): `GT_MODE`, `GT_SERIALIZE`, `GT_FIRSTDIFF`, `GT_LIST_PACKET[a-b]`, `GT_LIST_XFER`,
   `GT_VRAM_PACKETS`, `GT_WATCH_WORD`, `GT_ISOLATE`, `GT_SNAP*`, `GT_CPU_FLUSH_EACH`, `GT_ZERO_*`.
+
+## Captura de dumps de gameplay (2026-10-16)
+Roteiro automático no X aninhado `:7` (`/tmp/boot_play.py`, teclas por `x11_nested.py key`): boot ~60 s -> K (New Game) -> K (Spartan)
+-> Return a cada 8 s até ~200 s (pula o FMV; **parar depois**, Start abre a pausa) -> J/W/D para combater -> `Shift+F8` a cada 15 s
+(dump de 1 quadro; ~7–12 MB). Dumps de FMV têm 1–2 primitivas. Replay `gow2_gs_gpu_replay --out prefix` grava `prefixgpuN.ppm`
+só no modo CPU+GPU. Nomear saídas pelo horário do dump (bug do octal). `hud_exact.py` (DBY para ver linhas baixas) ficou experimental.
+`perf` exige `kernel.perf_event_paranoid` liberado pelo usuário (estava em 4).

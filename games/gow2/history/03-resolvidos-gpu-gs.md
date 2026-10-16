@@ -28,3 +28,12 @@ PCIe não é gargalo: ~2,1 MB/quadro; leitura síncrona de 0,9 MB = 0,1 ms.
 81% dos 40 mil vértices/quadro vêm com ADC=1 (VU1 já cortou): só ~7,7 mil triângulos desenhados.
 Suspeitas **não medidas** para os 12 ms: Z/gsDiv em fp64, quads de bounding box em vez de triângulos justos,
 leituras de swizzle por amostra, número de barreiras.
+
+## G11. GPU GS no runtime vivo (2026-10-16)
+| Sintoma | Causa | Solução | Estado |
+|---|---|---|---|
+| `eglMakeCurrent` falhava (0x3000) dentro do `ps2EntryRunner` | EGL não convive com o contexto GLX do raylib no mesmo processo (funciona nas ferramentas) | janela GLFW oculta criada na thread principal, usada pela thread da GPU (`GOW2_GLFW_CONTEXT`) | resolvido |
+| Arquivo novo ignorava `COMPILE_DEFINITIONS` | `ps2EntryRunner` usa *unity build*; propriedades de fonte são por diretório | `SKIP_UNITY_BUILD_INCLUSION` + `TARGET_DIRECTORY ps2EntryRunner` | resolvido |
+| `Present` na thread de render e `Submit` na do jogo | um contexto GL só serve a uma thread | fila de comandos em ordem + thread dona do GL; `Present`/leituras síncronas | resolvido |
+| `ClearFramebuffer` (HLE de `sceGsSwapDBuff`) | caminho CPU escreve direto na VRAM | sprite plano (ZTST=ALWAYS, sem Z write) pelo caminho normal | resolvido (não validado vs CPU) |
+Resultado: menu vivo idêntico ao caminho CPU; 3–3,5 VSync/s (antes ~2). Stats: ~340 draws/quadro, splits dominados por hazard.

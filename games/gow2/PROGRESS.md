@@ -1,6 +1,9 @@
 # God of War II (SCUS_974.81) — Progresso e próximos passos
 
-> **Estado atual (2026-10-15, fim do dia) — leia isto primeiro.**
+> **Estado atual (2026-10-16) — leia isto primeiro.**
+> * **Novo:** GPU GS ligada ao runtime (`PS2_GS_BACKEND=gpu`), commit `ed66930`; menu vivo igual ao CPU, ~3–3,5 VSync/s.
+>   O fundo do menu ainda **não aparece ao vivo** (CPU e GPU): causa fora do GS (`history/07` A16) — próximo alvo.
+>   Perfil ao vivo: VU1 36%, GS CPU 22%, escalonador IOP ~12% (A17). 19 dumps de gameplay em `~/gow2/pcsx2-ref/gameplay`.
 > * Histórico completo de problemas (resolvidos, contornados, abertos, com impacto): [`history/`](history/README.md).
 > * Menu do jogo roda no runtime com controle, a ~3% da velocidade (GS por software domina).
 > * GS em GPU (VRAM como buffer) validado contra o modelo CPU e **a ~0,8 de erro médio por canal do PCSX2** na metade

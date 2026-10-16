@@ -35,3 +35,6 @@ O estado atual e os próximos passos ficam em [`../PROGRESS.md`](../PROGRESS.md)
 * Contra o PCSX2 (software renderer), o quadro do menu está a ~0,8 de erro médio por canal na metade de cima
   (medida exata), partindo de 11,6 no início do dia. A metade de baixo não foi medida com a mesma precisão.
 * Só **uma cena** (menu principal, 4 quadros do mesmo dump) foi validada.
+
+## Atualização 2026-10-16
+GPU ligada ao runtime (G11), perfil ao vivo (VU1 36% / GS 22% / IOP-sched 12%), novos abertos A16–A18, lições 12–17 em 09.

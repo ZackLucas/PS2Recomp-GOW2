@@ -40,3 +40,12 @@ Para os commits anteriores, ver `git log` das branches `gow2` e `gow2-gpu-gs`.
 `c0c85a2` oráculo automatizado · `b6fcfa1` sondas Z/isolinha · `f320836` centro inteiro + Z truncado ·
 `26b832e` UV de sprite · `8a2b83a` borda top-left · `7f50203` ferramenta de comparação exata ·
 `8de9dfd` sprite exato PCSX2 + bilinear 4 bits + instantâneo de textura.
+
+## 2026-10-16
+* Dumps novos: 4 cenas (menu de dificuldade, FMV x3) e 19 de gameplay (4–10 min, combate no Colossus) em
+  `~/gow2/pcsx2-ref/{scenes,gameplay}`; usuário aprovou visualmente os 18 pares PCSX2xGPU (`gameplay/pares`).
+* Usuário notou serrilhado/alpha/cores diferentes: serrilhado = screenshot do PCSX2 filtrado (1024x603); barras iguais;
+  alpha do contador não confirmado (medição exata falhou por quadro desalinhado).
+* Profiling do jogo vivo (`perf`): VU1 ~36%, GS CPU ~22%, escalonador IOP ~12%.
+* GPU ligada ao runtime (`PS2_GS_BACKEND=gpu`), commit `ed66930`. Fundo do menu continua ausente: causa fora do GS (A16).
+* Erro meu: `kill_all` matou o PCSX2 do usuário; corrigido (`88e4786`).
