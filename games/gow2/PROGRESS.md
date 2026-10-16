@@ -1,5 +1,16 @@
 # God of War II (SCUS_974.81) — Progresso e próximos passos
 
+> **Estado atual (2026-10-15, fim do dia) — leia isto primeiro.**
+> * Histórico completo de problemas (resolvidos, contornados, abertos, com impacto): [`history/`](history/README.md).
+> * Menu do jogo roda no runtime com controle, a ~3% da velocidade (GS por software domina).
+> * GS em GPU (VRAM como buffer) validado contra o modelo CPU e **a ~0,8 de erro médio por canal do PCSX2** na metade
+>   superior do quadro do menu (exato), vindo de 11,6; **não está ligado ao runtime**.
+> * Branch `gow2-gpu-gs` (fork `ZackLucas/PS2Recomp-GOW2`), último commit enviado `8de9dfd` + documentação.
+> * Próximos passos, em ordem: (1) A5 triângulos com TEX1=0 e A10 resíduo de Z (re-medir); (2) Gouraud ±1;
+>   (3) instantâneo de textura na GPU; (4) ampliar cobertura (mais cenas/dumps, metade inferior); (5) otimizar
+>   desenhos da GPU e **ligar ao runtime**; (6) recompilar VU1 (microVU como referência). Detalhes em `history/07-abertos.md`.
+> * Ferramentas: `scripts/pcsx2_exact.py`, `trunc_exact.py`, `syn_exact.py`, `gsdump_synth.py`; ver `history/04`.
+
 Estado em 14/10/2026. Branch `gow2` do PS2Recomp: uma vertente dedicada ao GoW 2,
 para não ficarmos presos só à engenharia genérica do projeto. As correções
 genéricas ficam em commits separados, para virar PR no upstream (ran-j/PS2Recomp)
