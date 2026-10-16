@@ -970,7 +970,9 @@ void VU1Interpreter::finishXgkick()
     if (!m_xgkick.active)
         return;
 
-    if (m_activeMemory)
+    if (m_xgkickSink)
+        m_xgkickSink(m_xgkickSinkCtx, m_xgkick.packet.data(), m_xgkick.totalBytes);
+    else if (m_activeMemory)
         m_activeMemory->submitGifPacket(GifPathId::Path1, m_xgkick.packet.data(), m_xgkick.totalBytes);
     else if (m_activeGs)
         m_activeGs->processGIFPacket(m_xgkick.packet.data(), m_xgkick.totalBytes);
@@ -1582,6 +1584,49 @@ VU1Interpreter::DecodedInstructionPair VU1Interpreter::decodeInstructionPair(con
     return decoded;
 }
 
+VU1Interpreter::PairInfo VU1Interpreter::analyzePair(uint32_t lower, uint32_t upper) const
+{
+    uint8_t bytes[8];
+    std::memcpy(bytes, &lower, 4);
+    std::memcpy(bytes + 4, &upper, 4);
+    const DecodedInstructionPair d = decodeInstructionPair(bytes, 0);
+    PairInfo info;
+    info.iBit = d.iBit;
+    info.eBit = d.eBit;
+    info.mBit = d.mBit;
+    info.dBit = d.dBit;
+    info.tBit = d.tBit;
+    info.reserved = d.upperUsage.reserved || d.lowerUsage.reserved;
+    info.lowerIsBranch = d.lowerUsage.pipeline == PipelineBranch;
+    info.delaysNextBranchRead = d.lowerUsage.delaysNextBranchRead;
+    info.shadowReg = d.upperVfShadowReg;
+    info.lowerViWrite = d.lowerUsage.viWrite;
+    info.suppressedLowerVf = d.suppressedLowerVf;
+    const auto fill = [](const InstructionUsage &u, UsageInfo &o)
+    {
+        o.vfReadCount = u.vfReadCount;
+        for (uint32_t k = 0; k < 2u; ++k)
+        {
+            o.vfRead[k].reg = u.vfRead[k].reg;
+            o.vfRead[k].lanes = u.vfRead[k].lanes;
+        }
+        o.vfWrite.reg = u.vfWrite.reg;
+        o.vfWrite.lanes = u.vfWrite.lanes;
+        o.viRead = u.viRead;
+        o.viWrite = u.viWrite;
+        o.accRead = u.accRead;
+        o.accWrite = u.accWrite;
+        o.vfLatency = u.vfLatency != 0u ? u.vfLatency : u.latency;
+        o.viLatency = u.viLatency != 0u ? u.viLatency : u.latency;
+        o.pipeline = static_cast<uint8_t>(u.pipeline);
+        o.waitQ = u.waitQ;
+        o.waitP = u.waitP;
+    };
+    fill(d.upperUsage, info.upper);
+    fill(d.lowerUsage, info.lower);
+    return info;
+}
+
 void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t codeSize,
                                              const PS2Memory *memory, uint64_t generation)
 {
@@ -1710,6 +1755,9 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         }
         if (m_cycle >= budgetEnd)
             break;
+
+        if (m_pairTrace)
+            m_pairTrace(m_pairTraceCtx, m_state.pc, m_state);
 
         uint8_t writtenVi = 0u;
         int32_t oldVi = 0;

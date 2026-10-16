@@ -36,7 +36,8 @@ namespace
 {
     // PS2_VU1_CAPTURE=<dir>: save every distinct VU1 micro-memory image seen at MSCAL and count calls per
     // (image, start PC). Used to catalogue the microprograms a game loads (input for native translation).
-    void vu1CaptureProgram(const uint8_t *code, uint32_t size, uint32_t startPC)
+    void vu1CaptureProgram(const uint8_t *code, uint32_t size, uint32_t startPC, uint32_t top, uint32_t itop,
+                           const VU1State &state, const uint8_t *data, uint32_t dataSize)
     {
         static const char *dir = std::getenv("PS2_VU1_CAPTURE");
         if (!dir)
@@ -62,6 +63,30 @@ namespace
             it = seen.emplace(h, std::map<uint32_t, uint64_t>{}).first;
         }
         ++it->second[startPC];
+        // PS2_VU1_CAPTURE_IMAGE=<hash prefix>: also save the exact input of the first calls of that image
+        // (start PC, TOP/ITOP, VU1 registers, 16 KiB data memory) as test vectors for the translated program.
+        static const char *want = std::getenv("PS2_VU1_CAPTURE_IMAGE");
+        if (want)
+        {
+            char hs[32];
+            std::snprintf(hs, sizeof hs, "%016llx", static_cast<unsigned long long>(h));
+            static std::map<uint32_t, uint32_t> saved;
+            if (std::strncmp(hs, want, std::strlen(want)) == 0 && saved[startPC] < 60u)
+            {
+                char path[512];
+                std::snprintf(path, sizeof path, "%s/in_%s_pc%u_%u.bin", dir, hs, startPC, saved[startPC]++);
+                if (FILE *f = std::fopen(path, "wb"))
+                {
+                    const uint32_t hdr[4] = {0x4E495556u, startPC, top, itop};
+                    const uint32_t sz = static_cast<uint32_t>(sizeof(VU1State));
+                    std::fwrite(hdr, 4, 4, f);
+                    std::fwrite(&sz, 4, 1, f);
+                    std::fwrite(&state, 1, sizeof(VU1State), f);
+                    std::fwrite(data, 1, dataSize, f);
+                    std::fclose(f);
+                }
+            }
+        }
         if (++calls % 5000 == 0)
         {
             std::fprintf(stderr, "[vu1cap] calls=%llu images=%zu\n", static_cast<unsigned long long>(calls), seen.size());
@@ -737,7 +762,8 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
-                                     vu1CaptureProgram(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, startPC);
+                                     vu1CaptureProgram(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, startPC, top, itop, m_vu1.state(),
+                                                       m_memory.getVU1Data(), PS2_VU1_DATA_SIZE);
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                    m_gs, &m_memory, startPC, top, itop, 65536);

@@ -11,8 +11,31 @@
 #include <cstring>
 #include <limits>
 
+#define VU1N_INLINE inline __attribute__((always_inline))
+#ifdef VU1N_TRACE_PAIRS
+#define VU1N_PAIR(n) do { if (s.trace) s.trace(s.traceCtx, (n), &s); } while (0)
+#else
+#define VU1N_PAIR(n) ((void)0)
+#endif
+
 namespace vu1n
 {
+    // Timing model mirrors VU1Interpreter: FMAC flags (4 cycles), Q (DIV 7 / RSQRT 13) and P (EFU) are written
+    // by pending entries that do NOT block readers; vf/vi/acc readers wait on a ready-cycle scoreboard.
+    struct FlagE
+    {
+        uint64_t ready, issue;
+        uint32_t mac, status, extra, clip;
+        uint8_t wMac, wStatus, wSticky, wClip, valid;
+    };
+    struct ScalarE
+    {
+        uint64_t ready;
+        float value;
+        uint32_t di;
+        uint8_t valid;
+    };
+
     struct State
     {
         float vf[32][4];
@@ -30,6 +53,20 @@ namespace vu1n
         uint32_t itop;
         uint8_t *mem;      // VU data memory
         uint32_t memSize;  // power of two (16 KiB on VU1)
+        // XGKICK destination: receives one complete GIF packet (all tags up to EOP).
+        void (*sink)(void *ctx, const uint8_t *packet, uint32_t bytes);
+        void *sinkCtx;
+        void (*trace)(void *ctx, uint32_t pair, const State *s); // optional per-pair trace (VU1N_TRACE_PAIRS)
+        void *traceCtx;
+        uint64_t cyc;
+        uint64_t vfReady[32][4];
+        uint64_t viReady[16];
+        uint64_t accReady[4];
+        uint64_t efuResourceReady;
+        FlagE flagq[8];
+        ScalarE fdiv;
+        ScalarE efu[2];
+        int32_t budget;    // remaining taken branches before generated code bails out (runaway-loop guard)
     };
 
     inline float opnd(float v)
@@ -78,6 +115,132 @@ namespace vu1n
         if (dest & 4u) dst[1] = r[1];
         if (dest & 2u) dst[2] = r[2];
         if (dest & 1u) dst[3] = r[3];
+    }
+
+
+    // ---- pipelines ----
+    inline void pushFlag(State &s, FlagE e)
+    {
+        for (FlagE &x : s.flagq)
+            if (!x.valid)
+            {
+                e.valid = 1;
+                e.issue = s.cyc;
+                e.ready = s.cyc + 4u;
+                x = e;
+                return;
+            }
+    }
+    inline void commit(State &s)
+    {
+        for (FlagE &e : s.flagq)
+        {
+            if (!e.valid || e.ready > s.cyc)
+                continue;
+            if (e.wMac)
+                s.mac = e.mac;
+            if (e.wStatus)
+            {
+                const uint32_t cur = e.status & 0xFu;
+                s.status = (s.status & 0xFF0u) | cur | ((cur | e.extra) << 6);
+            }
+            if (e.wSticky)
+                s.status = (s.status & 0x03Fu) | (e.status & 0xFC0u);
+            if (e.wClip)
+                s.clip = e.clip;
+            e.valid = 0;
+        }
+        if (s.fdiv.valid && s.fdiv.ready <= s.cyc)
+        {
+            s.q = s.fdiv.value;
+            const uint32_t d = s.fdiv.di & 0x30u;
+            s.status = (s.status & 0xFCFu) | d | (d << 6);
+            s.fdiv.valid = 0;
+        }
+        for (ScalarE &e : s.efu)
+            if (e.valid && e.ready <= s.cyc)
+            {
+                s.p = e.value;
+                e.valid = 0;
+            }
+    }
+    // Per-pair scoreboard: readers wait until the cycle their operands are ready.
+    inline uint64_t rdVf(uint64_t r, const State &s, int reg, uint8_t lanes)
+    {
+        for (int c = 0; c < 4; ++c)
+            if ((lanes & (8u >> c)) && s.vfReady[reg][c] > r)
+                r = s.vfReady[reg][c];
+        return r;
+    }
+    inline uint64_t rdVi(uint64_t r, const State &s, uint16_t mask)
+    {
+        for (int k = 1; k < 16; ++k)
+            if ((mask & (1u << k)) && s.viReady[k] > r)
+                r = s.viReady[k];
+        return r;
+    }
+    inline uint64_t rdAcc(uint64_t r, const State &s, uint8_t lanes)
+    {
+        for (int c = 0; c < 4; ++c)
+            if ((lanes & (8u >> c)) && s.accReady[c] > r)
+                r = s.accReady[c];
+        return r;
+    }
+    inline uint64_t rdFdiv(uint64_t r, const State &s) { return s.fdiv.valid && s.fdiv.ready > r ? s.fdiv.ready : r; }
+    inline uint64_t rdEfuAll(uint64_t r, const State &s)
+    {
+        for (const ScalarE &e : s.efu)
+            if (e.valid && e.ready > r)
+                r = e.ready;
+        return r;
+    }
+    inline uint64_t rdEfuRes(uint64_t r, const State &s) { return s.efuResourceReady > r ? s.efuResourceReady : r; }
+    inline void begin(State &s, uint64_t ready)
+    {
+        if (ready > s.cyc)
+            s.cyc = ready;
+        commit(s);
+    }
+    inline void wrVf(State &s, int reg, uint8_t lanes, uint32_t lat)
+    {
+        if (reg == 0)
+            return;
+        for (int c = 0; c < 4; ++c)
+            if (lanes & (8u >> c))
+                s.vfReady[reg][c] = s.cyc + lat;
+    }
+    inline void wrVi(State &s, uint16_t mask, uint32_t lat)
+    {
+        for (int k = 1; k < 16; ++k)
+            if (mask & (1u << k))
+                s.viReady[k] = s.cyc + lat;
+    }
+    inline void wrAcc(State &s, uint8_t lanes)
+    {
+        for (int c = 0; c < 4; ++c)
+            if (lanes & (8u >> c))
+                s.accReady[c] = s.cyc + 1u;
+    }
+    inline void endPair(State &s) { ++s.cyc; }
+    // Drain every pending pipeline entry (end of program / single-instruction tests).
+    inline void flush(State &s)
+    {
+        const uint64_t keep = s.cyc;
+        s.cyc = ~0ull >> 1;
+        commit(s);
+        s.cyc = keep;
+    }
+    // Program start: empty pipelines and scoreboard, like VU1Interpreter::execute.
+    inline void startProgram(State &s)
+    {
+        std::memset(s.vfReady, 0, sizeof(s.vfReady));
+        std::memset(s.viReady, 0, sizeof(s.viReady));
+        std::memset(s.accReady, 0, sizeof(s.accReady));
+        std::memset(s.flagq, 0, sizeof(s.flagq));
+        std::memset(&s.fdiv, 0, sizeof(s.fdiv));
+        std::memset(s.efu, 0, sizeof(s.efu));
+        s.efuResourceReady = 0;
+        s.workingClip = s.clip;
     }
 
     // vf0 is hard-wired to (0,0,0,1): writes to it are dropped.
@@ -135,9 +298,13 @@ namespace vu1n
             if (lf[c] & 8u) mac |= lane << 12;
             status |= lf[c];
         }
-        s.mac = mac;
-        const uint32_t cur = status & 0xFu;
-        s.status = (s.status & 0xFF0u) | cur | ((cur | sticky) << 6);
+        FlagE fe{};
+        fe.mac = mac;
+        fe.status = status;
+        fe.extra = sticky;
+        fe.wMac = 1;
+        fe.wStatus = 1;
+        pushFlag(s, fe);
         if (toAcc)
             applyDest(s.acc, r, dest);
         else
@@ -290,12 +457,14 @@ namespace vu1n
             if (exceeds(s.vf[fs][c], 0x80000000u)) f |= 2u << (2 * c);
         }
         s.workingClip = ((s.workingClip << 6) | (f & 0x3Fu)) & 0xFFFFFFu;
-        s.clip = s.workingClip;
+        FlagE fe{};
+        fe.clip = s.workingClip;
+        fe.wClip = 1;
+        pushFlag(s, fe);
     }
 
     // ======================= Lower unit (integer / load-store / flags / divide / EFU) =======================
     // Branches, XGKICK and program flow are handled by the generated code, not here.
-#define VU1N_INLINE inline __attribute__((always_inline))
 
     namespace detail
     {
@@ -340,11 +509,25 @@ namespace vu1n
             poly *= poly;
             return poly != 0.0f ? 1.0f / poly : std::numeric_limits<float>::max();
         }
-        VU1N_INLINE void setQ(State &s, float v, uint32_t di)
+        VU1N_INLINE void setQ(State &s, float v, uint32_t di, uint32_t lat)
         {
-            s.q = normResult(v);
-            const uint32_t d = di & 0x30u;
-            s.status = (s.status & 0xFCFu) | d | (d << 6);
+            s.fdiv.valid = 1;
+            s.fdiv.ready = s.cyc + lat;
+            s.fdiv.value = normResult(v);
+            s.fdiv.di = di & 0x30u;
+        }
+        VU1N_INLINE void setP(State &s, float v, uint32_t lat)
+        {
+            const float nv = normResult(v);
+            for (ScalarE &e : s.efu)
+                if (!e.valid)
+                {
+                    e.valid = 1;
+                    e.ready = s.cyc + lat;
+                    e.value = nv;
+                    s.efuResourceReady = s.cyc + (lat > 0u ? lat - 1u : 0u);
+                    return;
+                }
         }
         VU1N_INLINE int destComp(uint8_t dest) { return (dest & 8) ? 0 : (dest & 4) ? 1 : (dest & 2) ? 2 : 3; }
         VU1N_INLINE void storeQ(State &s, uint32_t addr, const uint32_t w[4], uint8_t mask)
@@ -379,11 +562,22 @@ namespace vu1n
         case 0x08: { const int16_t imm = static_cast<int16_t>(static_cast<int16_t>(i & 0x7FF) | ((i >> 10) & 0x7800)); viSet(s, it, static_cast<int16_t>(s.vi[is] + imm)); return; }
         case 0x09: { const int16_t imm = static_cast<int16_t>(static_cast<int16_t>(i & 0x7FF) | ((i >> 10) & 0x7800)); viSet(s, it, static_cast<int16_t>(s.vi[is] - imm)); return; }
         case 0x10: s.vi[1] = ((s.clip & 0xFFFFFFu) == imm24) ? 1 : 0; return;
-        case 0x11: s.workingClip = imm24; s.clip = imm24; return;
+        case 0x11:
+        {
+            s.workingClip = imm24;
+            for (FlagE &e : s.flagq) if (e.valid && e.issue == s.cyc) e.wClip = 0;
+            FlagE fe{}; fe.clip = imm24; fe.wClip = 1; pushFlag(s, fe);
+            return;
+        }
         case 0x12: s.vi[1] = ((s.clip & imm24) != 0) ? 1 : 0; return;
         case 0x13: s.vi[1] = ((s.clip | imm24) == 0xFFFFFFu) ? 1 : 0; return;
         case 0x14: viSet(s, it, ((s.status & 0xFFFu) == imm12) ? 1 : 0); return;
-        case 0x15: s.status = (s.status & 0x03Fu) | (imm12 & 0xFC0u); return;
+        case 0x15:
+        {
+            for (FlagE &e : s.flagq) if (e.valid && e.issue == s.cyc) e.wStatus = 0;
+            FlagE fe{}; fe.status = imm12 & 0xFC0u; fe.wSticky = 1; pushFlag(s, fe);
+            return;
+        }
         case 0x16: viSet(s, it, static_cast<int32_t>((s.status & 0xFFFu) & imm12)); return;
         case 0x17: viSet(s, it, static_cast<int32_t>((s.status & 0xFFFu) | imm12)); return;
         case 0x18: viSet(s, it, ((s.mac & 0xFFFFu) == static_cast<uint32_t>(static_cast<uint16_t>(s.vi[is]))) ? 1 : 0); return;
@@ -419,10 +613,10 @@ namespace vu1n
                 uint32_t di = 0; float r;
                 if (den == 0.0f) { di = num == 0.0f ? 0x10u : 0x20u; r = std::signbit(num) != std::signbit(den) ? -std::numeric_limits<float>::max() : std::numeric_limits<float>::max(); }
                 else r = num / den;
-                setQ(s, normResult(r), di);
+                setQ(s, normResult(r), di, 7u);
                 return;
             }
-            case 0x39: { const float v = opnd(s.vf[ft][ftf]); setQ(s, std::sqrt(std::fabs(v)), v < 0.0f ? 0x10u : 0u); return; }
+            case 0x39: { const float v = opnd(s.vf[ft][ftf]); setQ(s, std::sqrt(std::fabs(v)), v < 0.0f ? 0x10u : 0u, 7u); return; }
             case 0x3A:
             {
                 const float num = opnd(s.vf[fs][fsf]), rad = opnd(s.vf[ft][ftf]);
@@ -430,7 +624,7 @@ namespace vu1n
                 uint32_t di = rad < 0.0f ? 0x10u : 0u; float r;
                 if (den != 0.0f) r = num / den;
                 else { di = num == 0.0f ? 0x10u : 0x20u; r = std::signbit(num) ? -std::numeric_limits<float>::max() : std::numeric_limits<float>::max(); }
-                setQ(s, normResult(r), di);
+                setQ(s, normResult(r), di, 13u);
                 return;
             }
             case 0x3B: return;
@@ -453,23 +647,133 @@ namespace vu1n
                 if (f2 == 0x70) r = sum;
                 else if (f2 == 0x71) r = sum != 0.0f ? 1.0f / sum : sum;
                 else { const float len = std::sqrt(sum); r = f2 == 0x72 ? len : (len != 0.0f ? 1.0f / len : len); }
-                s.p = normResult(r);
+                setP(s, r, f2 == 0x70 ? 11u : f2 == 0x71 ? 18u : f2 == 0x72 ? 18u : 24u);
                 return;
             }
-            case 0x74: { const float x = opnd(s.vf[fs][0]), y = opnd(s.vf[fs][1]); s.p = normResult(x != 0.0f ? eatan(y / x) : 0.0f); return; }
-            case 0x75: { const float x = opnd(s.vf[fs][0]), z = opnd(s.vf[fs][2]); s.p = normResult(x != 0.0f ? eatan(z / x) : 0.0f); return; }
-            case 0x76: { float sum = 0.0f; for (int c = 0; c < 4; ++c) sum += opnd(s.vf[fs][c]); s.p = normResult(sum); return; }
-            case 0x78: { const float v = opnd(s.vf[fs][(i >> 21) & 3]); s.p = normResult(v >= 0.0f ? std::sqrt(v) : v); return; }
-            case 0x79: { float r = opnd(s.vf[fs][(i >> 21) & 3]); if (r >= 0.0f) { r = std::sqrt(r); if (r != 0.0f) r = 1.0f / r; } s.p = normResult(r); return; }
-            case 0x7A: { const float v = opnd(s.vf[fs][(i >> 21) & 3]); s.p = normResult(v != 0.0f ? 1.0f / v : v); return; }
+            case 0x74: { const float x = opnd(s.vf[fs][0]), y = opnd(s.vf[fs][1]); setP(s, x != 0.0f ? eatan(y / x) : 0.0f, 54u); return; }
+            case 0x75: { const float x = opnd(s.vf[fs][0]), z = opnd(s.vf[fs][2]); setP(s, x != 0.0f ? eatan(z / x) : 0.0f, 54u); return; }
+            case 0x76: { float sum = 0.0f; for (int c = 0; c < 4; ++c) sum += opnd(s.vf[fs][c]); setP(s, sum, 12u); return; }
+            case 0x78: { const float v = opnd(s.vf[fs][(i >> 21) & 3]); setP(s, v >= 0.0f ? std::sqrt(v) : v, 12u); return; }
+            case 0x79: { float r = opnd(s.vf[fs][(i >> 21) & 3]); if (r >= 0.0f) { r = std::sqrt(r); if (r != 0.0f) r = 1.0f / r; } setP(s, r, 18u); return; }
+            case 0x7A: { const float v = opnd(s.vf[fs][(i >> 21) & 3]); setP(s, v != 0.0f ? 1.0f / v : v, 12u); return; }
             case 0x7B: return;
-            case 0x7C: s.p = normResult(esin(opnd(s.vf[fs][(i >> 21) & 3]))); return;
-            case 0x7D: s.p = normResult(eatan(opnd(s.vf[fs][(i >> 21) & 3]))); return;
-            case 0x7E: s.p = normResult(eexp(opnd(s.vf[fs][(i >> 21) & 3]))); return;
+            case 0x7C: setP(s, esin(opnd(s.vf[fs][(i >> 21) & 3])), 29u); return;
+            case 0x7D: setP(s, eatan(opnd(s.vf[fs][(i >> 21) & 3])), 54u); return;
+            case 0x7E: setP(s, eexp(opnd(s.vf[fs][(i >> 21) & 3])), 44u); return;
             default: return;
             }
         }
         default: return;
+        }
+    }
+VU1N_INLINE void upper(State &s, uint32_t u)
+{
+    const uint8_t dest = (u >> 21) & 0xF;
+    const int ft = (u >> 16) & 0x1F, fs = (u >> 11) & 0x1F, fd = (u >> 6) & 0x1F;
+    const uint32_t f = u & 0x3F;
+    if (f < 0x3C)
+    {
+        if (f <= 3) return op_bc(s, K_ADD, false, fd, fs, ft, f & 3, dest);
+        if (f <= 7) return op_bc(s, K_SUB, false, fd, fs, ft, f & 3, dest);
+        if (f <= 0xB) return op_bc(s, K_MADD, false, fd, fs, ft, f & 3, dest);
+        if (f <= 0xF) return op_bc(s, K_MSUB, false, fd, fs, ft, f & 3, dest);
+        if (f <= 0x13) return maxmini_bc(s, true, fd, fs, ft, f & 3, dest);
+        if (f <= 0x17) return maxmini_bc(s, false, fd, fs, ft, f & 3, dest);
+        if (f <= 0x1B) return op_bc(s, K_MUL, false, fd, fs, ft, f & 3, dest);
+        switch (f)
+        {
+        case 0x1C: return op_q(s, K_MUL, false, fd, fs, dest);
+        case 0x1D: return maxmini_i(s, true, fd, fs, dest);
+        case 0x1E: return op_i(s, K_MUL, false, fd, fs, dest);
+        case 0x1F: return maxmini_i(s, false, fd, fs, dest);
+        case 0x20: return op_q(s, K_ADD, false, fd, fs, dest);
+        case 0x21: return op_q(s, K_MADD, false, fd, fs, dest);
+        case 0x22: return op_i(s, K_ADD, false, fd, fs, dest);
+        case 0x23: return op_i(s, K_MADD, false, fd, fs, dest);
+        case 0x24: return op_q(s, K_SUB, false, fd, fs, dest);
+        case 0x25: return op_q(s, K_MSUB, false, fd, fs, dest);
+        case 0x26: return op_i(s, K_SUB, false, fd, fs, dest);
+        case 0x27: return op_i(s, K_MSUB, false, fd, fs, dest);
+        case 0x28: return op_vt(s, K_ADD, false, fd, fs, ft, dest);
+        case 0x29: return op_vt(s, K_MADD, false, fd, fs, ft, dest);
+        case 0x2A: return op_vt(s, K_MUL, false, fd, fs, ft, dest);
+        case 0x2B: return maxmini_vt(s, true, fd, fs, ft, dest);
+        case 0x2C: return op_vt(s, K_SUB, false, fd, fs, ft, dest);
+        case 0x2D: return op_vt(s, K_MSUB, false, fd, fs, ft, dest);
+        case 0x2E: return op_cross(s, K_OPMSUB, false, fd, fs, ft, dest);
+        case 0x2F: return maxmini_vt(s, false, fd, fs, ft, dest);
+        }
+        return;
+    }
+    const uint32_t sp = (u & 3u) | ((u >> 4) & 0x7Cu);
+    if (sp <= 3) return op_bc(s, K_ADD, true, 0, fs, ft, sp & 3, dest);
+    if (sp <= 7) return op_bc(s, K_SUB, true, 0, fs, ft, sp & 3, dest);
+    if (sp <= 0xB) return op_bc(s, K_MADD, true, 0, fs, ft, sp & 3, dest);
+    if (sp <= 0xF) return op_bc(s, K_MSUB, true, 0, fs, ft, sp & 3, dest);
+    if (sp >= 0x10 && sp <= 0x13) { static const int sh[4] = {0, 4, 12, 15}; return itof(s, ft, fs, dest, sh[sp & 3]); }
+    if (sp >= 0x14 && sp <= 0x17) { static const int sh[4] = {0, 4, 12, 15}; return ftoi(s, ft, fs, dest, sh[sp & 3]); }
+    if (sp >= 0x18 && sp <= 0x1B) return op_bc(s, K_MUL, true, 0, fs, ft, sp & 3, dest);
+    switch (sp)
+    {
+    case 0x1C: return op_q(s, K_MUL, true, 0, fs, dest);
+    case 0x1D: return abs_(s, ft, fs, dest);
+    case 0x1E: return op_i(s, K_MUL, true, 0, fs, dest);
+    case 0x1F: return clip(s, fs, ft);
+    case 0x20: return op_q(s, K_ADD, true, 0, fs, dest);
+    case 0x21: return op_q(s, K_MADD, true, 0, fs, dest);
+    case 0x22: return op_i(s, K_ADD, true, 0, fs, dest);
+    case 0x23: return op_i(s, K_MADD, true, 0, fs, dest);
+    case 0x24: return op_q(s, K_SUB, true, 0, fs, dest);
+    case 0x25: return op_q(s, K_MSUB, true, 0, fs, dest);
+    case 0x26: return op_i(s, K_SUB, true, 0, fs, dest);
+    case 0x27: return op_i(s, K_MSUB, true, 0, fs, dest);
+    case 0x28: return op_vt(s, K_ADD, true, 0, fs, ft, dest);
+    case 0x29: return op_vt(s, K_MADD, true, 0, fs, ft, dest);
+    case 0x2A: return op_vt(s, K_MUL, true, 0, fs, ft, dest);
+    case 0x2C: return op_vt(s, K_SUB, true, 0, fs, ft, dest);
+    case 0x2D: return op_vt(s, K_MSUB, true, 0, fs, ft, dest);
+    case 0x2E: return op_cross(s, K_OPMULA, true, 0, fs, ft, dest);
+    }
+}
+
+    // XGKICK: walk the GIF tags starting at qword address `qw` and hand the whole packet to the sink. The
+    // packet is copied at issue time (the interpreter streams it over the next cycles; programs double-buffer).
+    inline void xgkick(State &s, uint32_t qw)
+    {
+        if (!s.sink || s.memSize < 16u)
+            return;
+        static thread_local uint8_t buf[16384];
+        const uint32_t src = (qw * 16u) % s.memSize;
+        uint32_t copied = 0, tagEnd = 0;
+        bool eop = false;
+        while (copied + 16u <= sizeof(buf))
+        {
+            for (uint32_t k = 0; k < 16u; ++k)
+                buf[copied + k] = s.mem[(src + copied + k) % s.memSize];
+            const uint32_t qwordOffset = copied;
+            copied += 16u;
+            if (tagEnd == 0u)
+            {
+                uint64_t lo;
+                std::memcpy(&lo, buf + qwordOffset, 8);
+                const uint32_t nloop = static_cast<uint32_t>(lo & 0x7FFFu), format = static_cast<uint32_t>((lo >> 58) & 3u);
+                uint32_t nreg = static_cast<uint32_t>((lo >> 60) & 0xFu);
+                if (nreg == 0u) nreg = 16u;
+                uint64_t bytes = 16u;
+                if (format == 0u) bytes += static_cast<uint64_t>(nloop) * nreg * 16u;
+                else if (format == 1u) bytes += ((static_cast<uint64_t>(nloop) * nreg + 1u) & ~1ull) * 8u;
+                else bytes += static_cast<uint64_t>(nloop) * 16u;
+                if (bytes > sizeof(buf) - qwordOffset)
+                    return;
+                tagEnd = qwordOffset + static_cast<uint32_t>(bytes);
+                eop = ((lo >> 15) & 1u) != 0u;
+            }
+            if (copied >= tagEnd)
+            {
+                if (eop) { s.sink(s.sinkCtx, buf, copied); return; }
+                tagEnd = 0u;
+                eop = false;
+            }
         }
     }
 } // namespace vu1n

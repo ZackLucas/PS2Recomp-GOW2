@@ -15,75 +15,7 @@
 
 using namespace vu1n;
 
-static void execNativeUpper(State &s, uint32_t u)
-{
-    const uint8_t dest = (u >> 21) & 0xF;
-    const int ft = (u >> 16) & 0x1F, fs = (u >> 11) & 0x1F, fd = (u >> 6) & 0x1F;
-    const uint32_t f = u & 0x3F;
-    if (f < 0x3C)
-    {
-        if (f <= 3) return op_bc(s, K_ADD, false, fd, fs, ft, f & 3, dest);
-        if (f <= 7) return op_bc(s, K_SUB, false, fd, fs, ft, f & 3, dest);
-        if (f <= 0xB) return op_bc(s, K_MADD, false, fd, fs, ft, f & 3, dest);
-        if (f <= 0xF) return op_bc(s, K_MSUB, false, fd, fs, ft, f & 3, dest);
-        if (f <= 0x13) return maxmini_bc(s, true, fd, fs, ft, f & 3, dest);
-        if (f <= 0x17) return maxmini_bc(s, false, fd, fs, ft, f & 3, dest);
-        if (f <= 0x1B) return op_bc(s, K_MUL, false, fd, fs, ft, f & 3, dest);
-        switch (f)
-        {
-        case 0x1C: return op_q(s, K_MUL, false, fd, fs, dest);
-        case 0x1D: return maxmini_i(s, true, fd, fs, dest);
-        case 0x1E: return op_i(s, K_MUL, false, fd, fs, dest);
-        case 0x1F: return maxmini_i(s, false, fd, fs, dest);
-        case 0x20: return op_q(s, K_ADD, false, fd, fs, dest);
-        case 0x21: return op_q(s, K_MADD, false, fd, fs, dest);
-        case 0x22: return op_i(s, K_ADD, false, fd, fs, dest);
-        case 0x23: return op_i(s, K_MADD, false, fd, fs, dest);
-        case 0x24: return op_q(s, K_SUB, false, fd, fs, dest);
-        case 0x25: return op_q(s, K_MSUB, false, fd, fs, dest);
-        case 0x26: return op_i(s, K_SUB, false, fd, fs, dest);
-        case 0x27: return op_i(s, K_MSUB, false, fd, fs, dest);
-        case 0x28: return op_vt(s, K_ADD, false, fd, fs, ft, dest);
-        case 0x29: return op_vt(s, K_MADD, false, fd, fs, ft, dest);
-        case 0x2A: return op_vt(s, K_MUL, false, fd, fs, ft, dest);
-        case 0x2B: return maxmini_vt(s, true, fd, fs, ft, dest);
-        case 0x2C: return op_vt(s, K_SUB, false, fd, fs, ft, dest);
-        case 0x2D: return op_vt(s, K_MSUB, false, fd, fs, ft, dest);
-        case 0x2E: return op_cross(s, K_OPMSUB, false, fd, fs, ft, dest);
-        case 0x2F: return maxmini_vt(s, false, fd, fs, ft, dest);
-        }
-        return;
-    }
-    const uint32_t sp = (u & 3u) | ((u >> 4) & 0x7Cu);
-    if (sp <= 3) return op_bc(s, K_ADD, true, 0, fs, ft, sp & 3, dest);
-    if (sp <= 7) return op_bc(s, K_SUB, true, 0, fs, ft, sp & 3, dest);
-    if (sp <= 0xB) return op_bc(s, K_MADD, true, 0, fs, ft, sp & 3, dest);
-    if (sp <= 0xF) return op_bc(s, K_MSUB, true, 0, fs, ft, sp & 3, dest);
-    if (sp >= 0x10 && sp <= 0x13) { static const int sh[4] = {0, 4, 12, 15}; return itof(s, ft, fs, dest, sh[sp & 3]); }
-    if (sp >= 0x14 && sp <= 0x17) { static const int sh[4] = {0, 4, 12, 15}; return ftoi(s, ft, fs, dest, sh[sp & 3]); }
-    if (sp >= 0x18 && sp <= 0x1B) return op_bc(s, K_MUL, true, 0, fs, ft, sp & 3, dest);
-    switch (sp)
-    {
-    case 0x1C: return op_q(s, K_MUL, true, 0, fs, dest);
-    case 0x1D: return abs_(s, ft, fs, dest);
-    case 0x1E: return op_i(s, K_MUL, true, 0, fs, dest);
-    case 0x1F: return clip(s, fs, ft);
-    case 0x20: return op_q(s, K_ADD, true, 0, fs, dest);
-    case 0x21: return op_q(s, K_MADD, true, 0, fs, dest);
-    case 0x22: return op_i(s, K_ADD, true, 0, fs, dest);
-    case 0x23: return op_i(s, K_MADD, true, 0, fs, dest);
-    case 0x24: return op_q(s, K_SUB, true, 0, fs, dest);
-    case 0x25: return op_q(s, K_MSUB, true, 0, fs, dest);
-    case 0x26: return op_i(s, K_SUB, true, 0, fs, dest);
-    case 0x27: return op_i(s, K_MSUB, true, 0, fs, dest);
-    case 0x28: return op_vt(s, K_ADD, true, 0, fs, ft, dest);
-    case 0x29: return op_vt(s, K_MADD, true, 0, fs, ft, dest);
-    case 0x2A: return op_vt(s, K_MUL, true, 0, fs, ft, dest);
-    case 0x2C: return op_vt(s, K_SUB, true, 0, fs, ft, dest);
-    case 0x2D: return op_vt(s, K_MSUB, true, 0, fs, ft, dest);
-    case 0x2E: return op_cross(s, K_OPMULA, true, 0, fs, ft, dest);
-    }
-}
+static void execNativeUpper(State &s, uint32_t u) { upper(s, u); }
 
 static std::mt19937 rng(12345);
 static float randFloat()
@@ -152,6 +84,7 @@ int main()
             std::fesetround(FE_TOWARDZERO);
             execNativeUpper(a, u);
             std::fesetround(prev);
+            vu1n::flush(a);
 
             bool ok = std::memcmp(a.vf, st.vf, sizeof(a.vf)) == 0 && std::memcmp(a.acc, st.acc, sizeof(a.acc)) == 0 &&
                       a.mac == st.mac && a.status == st.status && a.clip == st.clip;
@@ -209,6 +142,7 @@ int main()
                 std::fesetround(FE_TOWARDZERO);
                 lower(a, l);
                 std::fesetround(prev);
+                vu1n::flush(a);
                 bool ok = std::memcmp(a.vf, st.vf, sizeof(a.vf)) == 0 && std::memcmp(a.acc, st.acc, sizeof(a.acc)) == 0 && a.mac == st.mac &&
                           a.status == st.status && a.clip == st.clip && std::memcmp(&a.q, &st.q, 4) == 0 && std::memcmp(&a.p, &st.p, 4) == 0 && a.r == st.r &&
                           std::memcmp(nmem.data(), data, PS2_VU1_DATA_SIZE) == 0;

@@ -74,3 +74,20 @@ endif()
 add_executable(gow2_vu1_native_test vu1_native_test.cpp)
 target_include_directories(gow2_vu1_native_test PRIVATE ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
 target_link_libraries(gow2_vu1_native_test PRIVATE ps2_runtime)
+
+# VU1 microprogram -> C++ translator.
+add_executable(gow2_vu1_gen vu1_gen.cpp)
+target_include_directories(gow2_vu1_gen PRIVATE ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
+target_link_libraries(gow2_vu1_gen PRIVATE ps2_runtime)
+
+# Whole-program check of a translated microprogram. Configure with -DGOW2_VU1_TEST_IMAGE=<16 KiB image>.
+if(GOW2_VU1_TEST_IMAGE)
+    set(GOW2_VU1_TEST_CPP ${CMAKE_CURRENT_BINARY_DIR}/vu1_prog_test_gen.cpp)
+    add_custom_command(OUTPUT ${GOW2_VU1_TEST_CPP}
+        COMMAND gow2_vu1_gen ${GOW2_VU1_TEST_IMAGE} ${GOW2_VU1_TEST_CPP} test
+        DEPENDS gow2_vu1_gen ${GOW2_VU1_TEST_IMAGE})
+    add_executable(gow2_vu1_prog_test vu1_prog_test.cpp ${GOW2_VU1_TEST_CPP})
+    target_include_directories(gow2_vu1_prog_test PRIVATE ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
+    target_compile_definitions(gow2_vu1_prog_test PRIVATE VU1N_TRACE_PAIRS=1)
+    target_link_libraries(gow2_vu1_prog_test PRIVATE ps2_runtime)
+endif()

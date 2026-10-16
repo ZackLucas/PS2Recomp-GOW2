@@ -59,10 +59,56 @@ public:
                 GS &gs, PS2Memory *memory = nullptr,
                 uint32_t top = 0, uint32_t itop = 0, uint32_t maxCycles = 65536);
 
+    // Static information about one instruction pair, for the native translator (same decode the interpreter uses).
+    struct UsageInfo
+    {
+        struct Access { uint8_t reg = 0, lanes = 0; };
+        Access vfRead[2];
+        uint8_t vfReadCount = 0;
+        Access vfWrite;
+        uint16_t viRead = 0, viWrite = 0;
+        uint8_t accRead = 0, accWrite = 0;
+        uint8_t vfLatency = 0; // effective latency of the vf write
+        uint8_t viLatency = 0; // effective latency of the vi write
+        uint8_t pipeline = 0;  // 0 none, 1 fmac, 2 lsu, 3 fdiv, 4 efu, 5 ialu, 6 branch, 7 xgkick
+        bool waitQ = false, waitP = false;
+    };
+    struct PairInfo
+    {
+        bool iBit = false, eBit = false, mBit = false, dBit = false, tBit = false;
+        bool reserved = false;
+        bool lowerIsBranch = false;
+        bool delaysNextBranchRead = false; // lower writes a VI that a branch in the next pair reads stale
+        uint8_t shadowReg = 0;             // vf written by the upper unit that the lower unit reads/writes
+        uint8_t suppressedLowerVf = 0;     // lower vf write dropped because the upper unit writes the same register
+        uint16_t lowerViWrite = 0;         // bitmask of VI registers written by the lower unit
+        UsageInfo upper, lower;
+    };
+    PairInfo analyzePair(uint32_t lower, uint32_t upper) const;
+
+    // Optional: receive XGKICK packets instead of sending them to PS2Memory / GS (testing).
+    void setXgkickSink(void (*sink)(void *, const uint8_t *, uint32_t), void *ctx)
+    {
+        m_xgkickSink = sink;
+        m_xgkickSinkCtx = ctx;
+    }
+
+    // Optional: called before each pair executes (testing / diagnostics).
+    void setPairTrace(void (*trace)(void *, uint32_t pc, const VU1State &), void *ctx)
+    {
+        m_pairTrace = trace;
+        m_pairTraceCtx = ctx;
+    }
+
     VU1State &state() { return m_state; }
     const VU1State &state() const { return m_state; }
 
 private:
+    void (*m_pairTrace)(void *, uint32_t, const VU1State &) = nullptr;
+    void *m_pairTraceCtx = nullptr;
+    void (*m_xgkickSink)(void *, const uint8_t *, uint32_t) = nullptr;
+    void *m_xgkickSinkCtx = nullptr;
+
     enum Pipeline : uint8_t
     {
         PipelineNone = 0,
