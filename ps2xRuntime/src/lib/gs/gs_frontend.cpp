@@ -595,6 +595,22 @@ void GS::latchHostPresentationFrame()
     const bool hasFrame = static_cast<bool>(frame);
     const uint32_t displayFbp = frame.displayFbp;
     const uint32_t sourceFbp = frame.sourceFbp;
+    if (const char *vd = std::getenv("PS2_GS_VRAMDUMP"))
+    {
+        static uint32_t n = 0;
+        if (++n == 200 && m_backend)
+        {
+            std::vector<uint8_t> v;
+            {
+                std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
+                m_backend->SnapshotVram(v);
+            }
+            if (FILE *f = std::fopen(vd, "wb")) { std::fwrite(v.data(), 1, v.size(), f); std::fclose(f); }
+            std::fprintf(stderr, "[gslog] vram dumped %zu bytes\n", v.size());
+        }
+    }
+    if (std::getenv("PS2_GS_LOG"))
+        std::fprintf(stderr, "[gslog] present display=0x%x source=0x%x %ux%u\n", displayFbp, sourceFbp, frame.width, frame.height);
     const uint32_t width = frame.width;
     const uint32_t height = frame.height;
     const bool usedPreferred = frame.usedPreferred;
@@ -1635,7 +1651,38 @@ void GS::vertexKick(bool drawing)
                 std::snprintf(key, sizeof key, "fbp=0x%x tbp0=0x%x tpsm=0x%x %ux%u cbp=0x%x", c.frame.fbp, c.tex0.tbp0,
                               c.tex0.psm, 1u << c.tex0.tw, 1u << c.tex0.th, c.tex0.cbp);
                 std::lock_guard<std::mutex> lk(g_gsLogMutex);
-                ++g_gsLogTex[key];
+                if (c.frame.fbp == 8 && c.tex0.tw == 9 && c.tex0.th == 9)
+                {
+                    static uint64_t total = 0, nonzero = 0;
+                    ++total;
+                    bool nz = false;
+                    for (int i = 0; i < batch.vertexCount; ++i)
+                        nz |= batch.vertices[i].x != 0.0f || batch.vertices[i].y != 0.0f;
+                    nonzero += nz;
+                    if (total % 2000 == 0)
+                        std::fprintf(stderr, "[gslog] bgdraws total=%llu nonzeroPos=%llu\n", (unsigned long long)total,
+                                     (unsigned long long)nonzero);
+                }
+                if (++g_gsLogTex[key] == 1 && c.tex0.tw == 9 && c.tex0.th == 9)
+                {
+                    uint32_t e[8];
+                    for (uint32_t i = 0; i < 8; ++i)
+                        e[i] = m_backend->ReadVram(0, c.tex0.cbp, 1, i, 0);
+                    {
+                        static int n = 0;
+                        if (c.frame.fbp == 8 && n++ < 6)
+                            std::fprintf(stderr,
+                                         "[gslog] state %s fbw=%u fpsm=0x%x fbmsk=%08x test=%016llx zbp=0x%x zpsm=0x%x zmask=%d "
+                                         "sc=%u,%u-%u,%u off=%x abe=%d type=%d v0=(%.1f,%.1f,z%.0f) v1=(%.1f,%.1f) rgba1=%02x%02x%02x%02x\n",
+                                         key, c.frame.fbw, c.frame.psm, c.frame.fbmsk, (unsigned long long)c.test, c.zbuf.zbp,
+                                         c.zbuf.psm, c.zbuf.zmask, c.scissor.x0, c.scissor.y0, c.scissor.x1, c.scissor.y1,
+                                         (unsigned)c.xyoffset.ofx, m_prim.abe, (int)m_prim.type, batch.vertices[0].x, batch.vertices[0].y,
+                                         batch.vertices[0].z, batch.vertices[1].x, batch.vertices[1].y, batch.vertices[1].r,
+                                         batch.vertices[1].g, batch.vertices[1].b, batch.vertices[1].a);
+                    }
+                    std::fprintf(stderr, "[gslog] clut %s cpsm=%u csm=%u: %08x %08x %08x %08x %08x %08x %08x %08x\n", key,
+                                 c.tex0.cpsm, c.tex0.csm, e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
+                }
             }
         }
         recordDrawDebugEventUnlocked(needed);

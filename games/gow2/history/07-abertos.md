@@ -100,6 +100,10 @@ hardware**:
   o retrato do Kratos e o pano vermelho. A imagem também sai pequena (512x448 sem escala) e `flips/s=0.0`.
 * **Por quê não resolvido:** só descartei o GS (GPU e CPU dão o mesmo). Candidatos: lacuna do IOP (dados não
   carregados), erro no VU1, fade-in lento a 3 VSync/s. Não separados.
+* **Achado (16/10, `PS2_GS_LOG`/`PS2_GS_VRAMDUMP`):** texturas e CLUTs do fundo estão na VRAM (não-zero) e os
+  desenhos do fundo (tristrip, 512x512, `fbp=0x8`) chegam ao GS, mas **todos** com X/Y = 0 e Z = 0 (cor preenchida):
+  10000 de 10000 sem posição. `fbp 0x8` fica todo zerado. Causa **a montante do GS**: geometria do VU1 (ou dos
+  dados que ele lê) chega zerada. Próximo: isolar o programa VU1 que gera esses strips.
 * **Impacto:** **alto** (a imagem do jogo vivo está errada) e é o próximo alvo.
 * **Como atacar:** gravar um dump de GS gerado pelo runtime (formato lido por `gs_replay`) e achar a primeira
   diferença contra o dump do PCSX2 (falta textura, primitiva ou upload).
