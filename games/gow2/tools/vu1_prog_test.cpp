@@ -17,7 +17,6 @@
 #include <string>
 #include <vector>
 
-extern "C" int32_t vu1_prog_test(vu1n::State &s, uint32_t entry);
 
 static std::vector<uint8_t> readFile(const char *path)
 {
@@ -37,22 +36,30 @@ static void sink(void *ctx, const uint8_t *p, uint32_t n) { static_cast<Packets 
 
 int main(int argc, char **argv)
 {
-    if (argc < 3) { std::puts("usage: vu1_prog_test image.bin in_*.bin ..."); return 2; }
-    const std::vector<uint8_t> image = readFile(argv[1]);
+    if (argc < 2) { std::puts("usage: vu1_prog_test in_<imagehash>_pc<N>_<k>.bin ... (image vu1_<imagehash>.bin next to each)"); return 2; }
     PS2Memory mem;
     if (!mem.initialize()) return 2;
     GS gs;
     gs.init(mem.getGSVRAM(), static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &mem.gs());
     std::vector<uint8_t> code(PS2_VU1_CODE_SIZE, 0), data(PS2_VU1_DATA_SIZE), nmem(PS2_VU1_DATA_SIZE);
-    std::memcpy(code.data(), image.data(), std::min<size_t>(image.size(), code.size()));
     VU1Interpreter vu;
     int cases = 0, noncomparable = 0, equal = 0, badMem = 0, badRegs = 0, badPkt = 0, nativeExit = 0, interpBudget = 0;
     long pktsTotal = 0;
     double benchInterp = 0, benchNative = 0;
     long benchCalls = 0;
     const int kBudget = 65536;
-    for (int ai = 2; ai < argc; ++ai)
+    for (int ai = 1; ai < argc; ++ai)
     {
+        const std::string inPath = argv[ai];
+        const size_t slash = inPath.find_last_of('/');
+        const std::string dir = slash == std::string::npos ? "." : inPath.substr(0, slash);
+        const std::string base = slash == std::string::npos ? inPath : inPath.substr(slash + 1);
+        const std::string hashStr = base.substr(3, 16);
+        const std::vector<uint8_t> image = readFile((dir + "/vu1_" + hashStr + ".bin").c_str());
+        if (image.size() < code.size()) { std::printf("skip %s (image missing)\n", argv[ai]); continue; }
+        std::memcpy(code.data(), image.data(), code.size());
+        vu1n::SegTable table;
+        table.build(code.data());
         const std::vector<uint8_t> in = readFile(argv[ai]);
         uint32_t hdr[5];
         if (in.size() < sizeof(hdr)) continue;
@@ -83,12 +90,15 @@ int main(int argc, char **argv)
 
         const int prev = std::fegetround();
         std::fesetround(FE_TOWARDZERO);
-        const int32_t rc = vu1_prog_test(a, startPC / 8);
+        const int32_t rc = vu1n::runProgram(a, table, startPC / 8);
         std::fesetround(prev);
 
         if (getenv("VU1_BENCH") && interpEnded && rc == -1)
         {
             const int reps = atoi(getenv("VU1_BENCH"));
+            const vu1n::State aSave = a;
+            const std::vector<uint8_t> nmemSave = nmem;
+            const VU1State stSave = vu.state();
             vu.setPairTrace(nullptr, nullptr);
             vu.setXgkickSink([](void *, const uint8_t *, uint32_t) {}, nullptr);
             auto t0 = std::chrono::steady_clock::now();
@@ -105,13 +115,14 @@ int main(int argc, char **argv)
             for (int k = 0; k < reps; ++k)
             {
                 std::memcpy(nmem.data(), in.data() + sizeof(hdr) + sizeof(init), nmem.size());
-                vu1_prog_test(a, startPC / 8);
+                vu1n::runProgram(a, table, startPC / 8);
             }
             std::fesetround(prev2);
             auto t2 = std::chrono::steady_clock::now();
             benchInterp += std::chrono::duration<double>(t1 - t0).count();
             benchNative += std::chrono::duration<double>(t2 - t1).count();
             benchCalls += reps;
+            a = aSave; nmem = nmemSave; a.mem = nmem.data();
         }
         ++cases;
         if (getenv("VU1_TRACE") && interpEnded && rc == -1)

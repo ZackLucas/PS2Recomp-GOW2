@@ -66,6 +66,7 @@ namespace vu1n
         FlagE flagq[8];
         ScalarE fdiv;
         ScalarE efu[2];
+        int32_t ov[16];    // VI values saved before the previous pair (a branch reads them stale)
         int32_t budget;    // remaining taken branches before generated code bails out (runaway-loop guard)
     };
 
@@ -775,6 +776,52 @@ VU1N_INLINE void upper(State &s, uint32_t u)
                 eop = false;
             }
         }
+    }
+
+    // ======================= Segment dispatch =======================
+    // A microprogram is translated per fixed-size segment of the 2048-pair code memory. Each segment function is
+    // keyed by the content of its window (one pair before and one after, which the translation depends on).
+    constexpr uint32_t kSegPairs = 64;
+    constexpr uint32_t kCodePairs = 2048;
+    using SegFn = int32_t (*)(State &, uint32_t);
+
+    inline uint64_t hashWindow(const uint8_t *code, uint32_t seg)
+    {
+        const uint32_t lo = seg * kSegPairs, from = lo > 0 ? lo - 1 : 0;
+        const uint32_t to = lo + kSegPairs + 1 < kCodePairs ? lo + kSegPairs + 1 : kCodePairs;
+        uint64_t h = 1469598103934665603ull;
+        for (uint32_t i = from * 8; i < to * 8; ++i)
+            h = (h ^ code[i]) * 1099511628211ull;
+        return h;
+    }
+    // Generated registry (vu1_registry.cpp): returns nullptr when the segment content was never translated.
+    SegFn findSegment(uint32_t seg, uint64_t hash);
+
+    // Segment function per segment for the code currently in VU memory. Rebuild only when the code changes
+    // (PS2Memory's VU1 code generation counter), not per call.
+    struct SegTable
+    {
+        SegFn fn[kCodePairs / kSegPairs];
+        void build(const uint8_t *code)
+        {
+            for (uint32_t seg = 0; seg < kCodePairs / kSegPairs; ++seg)
+                fn[seg] = findSegment(seg, hashWindow(code, seg));
+        }
+    };
+
+    // Runs from pair `entry` until the program ends (-1) or reaches code with no translated segment (returns its pair).
+    inline int32_t runProgram(State &s, const SegTable &table, uint32_t entry)
+    {
+        startProgram(s);
+        int32_t pc = static_cast<int32_t>(entry);
+        while (pc >= 0)
+        {
+            const uint32_t seg = static_cast<uint32_t>(pc) / kSegPairs;
+            if (seg >= kCodePairs / kSegPairs || !table.fn[seg])
+                return pc;
+            pc = table.fn[seg](s, static_cast<uint32_t>(pc));
+        }
+        return pc;
     }
 } // namespace vu1n
 

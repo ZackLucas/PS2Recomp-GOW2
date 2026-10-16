@@ -80,14 +80,18 @@ add_executable(gow2_vu1_gen vu1_gen.cpp)
 target_include_directories(gow2_vu1_gen PRIVATE ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
 target_link_libraries(gow2_vu1_gen PRIVATE ps2_runtime)
 
-# Whole-program check of a translated microprogram. Configure with -DGOW2_VU1_TEST_IMAGE=<16 KiB image>.
-if(GOW2_VU1_TEST_IMAGE)
-    set(GOW2_VU1_TEST_CPP ${CMAKE_CURRENT_BINARY_DIR}/vu1_prog_test_gen.cpp)
-    add_custom_command(OUTPUT ${GOW2_VU1_TEST_CPP}
-        COMMAND gow2_vu1_gen ${GOW2_VU1_TEST_IMAGE} ${GOW2_VU1_TEST_CPP} test
-        DEPENDS gow2_vu1_gen ${GOW2_VU1_TEST_IMAGE})
-    add_executable(gow2_vu1_prog_test vu1_prog_test.cpp ${GOW2_VU1_TEST_CPP})
-    target_include_directories(gow2_vu1_prog_test PRIVATE ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
-    target_compile_definitions(gow2_vu1_prog_test PRIVATE VU1N_TRACE_PAIRS=1)
-    target_link_libraries(gow2_vu1_prog_test PRIVATE ps2_runtime)
+# Native VU1 segments: gow2_vu1_gen writes one small file per distinct code segment into GOW2_VU1_GEN_DIR (outside
+# the repository: derived from game code). Configure with -DGOW2_VU1_GEN_DIR=<dir> after running the generator.
+if(GOW2_VU1_GEN_DIR)
+    file(GLOB GOW2_VU1_SEG_SOURCES ${GOW2_VU1_GEN_DIR}/*.cpp)
+    if(GOW2_VU1_SEG_SOURCES)
+        add_library(gow2_vu1_native STATIC ${GOW2_VU1_SEG_SOURCES})
+        target_include_directories(gow2_vu1_native PUBLIC ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
+        target_compile_definitions(gow2_vu1_native PRIVATE VU1N_TRACE_PAIRS=1)
+        set_target_properties(gow2_vu1_native PROPERTIES POSITION_INDEPENDENT_CODE ON UNITY_BUILD OFF)
+        add_executable(gow2_vu1_prog_test vu1_prog_test.cpp)
+        target_include_directories(gow2_vu1_prog_test PRIVATE ${CMAKE_SOURCE_DIR}/ps2xRuntime/include)
+        target_compile_definitions(gow2_vu1_prog_test PRIVATE VU1N_TRACE_PAIRS=1)
+        target_link_libraries(gow2_vu1_prog_test PRIVATE gow2_vu1_native ps2_runtime)
+    endif()
 endif()

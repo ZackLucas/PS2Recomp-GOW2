@@ -1,32 +1,39 @@
-// vu1_gen: translates a VU1 micro-memory image (16 KiB) into C++ that calls the native instruction semantics in
-// runtime/ps2_vu1_native.h. One labelled block per instruction pair; branches with their delay slot, JR/JALR through
-// a dispatch switch, E-bit end and XGKICK. The pair analysis (hazards, register shadowing) is the interpreter's own.
+// vu1_gen: translates VU1 micro-memory images into C++ that calls the native instruction semantics in
+// runtime/ps2_vu1_native.h. The 2048-pair code memory is split into segments of vu1n::kSegPairs pairs; every distinct
+// segment content (window = one pair before, the segment, one pair after) is translated once into its own function,
+// so the 142 captured images collapse into ~170 small functions. Branches keep their delay slots, JR/JALR dispatch
+// inside the segment or return to the driver, E-bit ends the program, XGKICK hands the packet to the sink.
 //
-//   vu1_gen <image.bin> <out.cpp> <name>
+//   vu1_gen <outdir> image.bin [image.bin ...]
 //
-// Generated: extern "C" int32_t vu1_prog_<name>(vu1n::State &s, uint32_t entryPair)
-//   returns -1 when the program ended (E-bit), otherwise the pair index at which execution must continue in the
-//   interpreter (a branch left the translated area, or an unsupported construct was reached).
+// Writes <outdir>/seg_<seg>_<hash>.cpp (one function each) and <outdir>/vu1_registry.cpp (findSegment).
+// Segment function: int32_t vu1_seg_<seg>_<hash>(vu1n::State &s, uint32_t entryPair)
+//   returns -1 when the program ended (E-bit), otherwise the pair index to continue at.
 #include "runtime/ps2_vu1.h"
+#include "runtime/ps2_vu1_native.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
+#include <map>
+#include <set>
 #include <sstream>
 #include <vector>
 
 namespace
 {
-    constexpr uint32_t kPairs = 2048;
+    constexpr uint32_t kPairs = vu1n::kCodePairs;
+    constexpr uint32_t kSeg = vu1n::kSegPairs;
     constexpr uint32_t kPcMask = 0x3FFFu;
 
     struct Pair
     {
         uint32_t lower = 0, upper = 0;
         VU1Interpreter::PairInfo info;
-        bool present = false;
     };
 
     int16_t imm11(uint32_t i) { return static_cast<int16_t>(static_cast<int32_t>(i << 21) >> 21); }
@@ -39,23 +46,25 @@ namespace
         return ((lower & 3u) | ((lower >> 4) & 0x7Cu)) == 0x6Cu;
     }
 
-    std::vector<Pair> g_pairs;
-    uint32_t g_count = 0;
-    unsigned g_unsupported = 0, g_branches = 0, g_jr = 0;
+    std::vector<Pair> g_pairs;       // the image being translated
+    uint32_t g_lo = 0, g_hi = 0;     // segment [g_lo, g_hi)
+    unsigned g_unsupported = 0;
 
     uint32_t lowerOp(const Pair &p) { return p.info.iBit ? 0xFFFFu : (p.lower >> 25) & 0x7Fu; }
 
-    // Name of the VI value a branch reads for register `r`: the value saved before the previous pair when that pair
-    // wrote it with the one-instruction branch delay, otherwise the live register.
+    // VI value a branch reads for register r: the copy saved before the previous pair when that pair wrote it with the
+    // one-instruction branch delay, otherwise the live register.
     std::string viRead(uint32_t n, int r)
     {
         if (r == 0)
             return "0";
-        if (n > 0 && g_pairs[n - 1].present && g_pairs[n - 1].info.delaysNextBranchRead && (g_pairs[n - 1].info.lowerViWrite & (1u << r)))
-            return "ov[" + std::to_string(r) + "]";
+        if (n > 0 && g_pairs[n - 1].info.delaysNextBranchRead && (g_pairs[n - 1].info.lowerViWrite & (1u << r)))
+            return "s.ov[" + std::to_string(r) + "]";
         return "s.vi[" + std::to_string(r) + "]";
     }
 
+    // One instruction pair: wait for operands, run upper then lower (lower sees the pre-pair value of a register the
+    // upper unit writes), mark write latencies, advance one cycle.
     void emitBody(std::ostringstream &o, uint32_t n)
     {
         const Pair &p = g_pairs[n];
@@ -63,12 +72,10 @@ namespace
         std::snprintf(hex, sizeof hex, "// pair %u  lower %08x upper %08x", n, p.lower, p.upper);
         o << "    " << hex << "\n    VU1N_PAIR(" << n << ");\n";
         const uint32_t op = lowerOp(p);
-        // Save VI values a following conditional branch must read stale.
-        if (p.info.delaysNextBranchRead && n + 1 < g_count && g_pairs[n + 1].present && !g_pairs[n + 1].info.iBit && isCondBranch(lowerOp(g_pairs[n + 1])))
+        if (p.info.delaysNextBranchRead && n + 1 < kPairs && !g_pairs[n + 1].info.iBit && isCondBranch(lowerOp(g_pairs[n + 1])))
             for (int r = 1; r < 16; ++r)
                 if (p.info.lowerViWrite & (1u << r))
-                    o << "    ov[" << r << "] = s.vi[" << r << "];\n";
-
+                    o << "    s.ov[" << r << "] = s.vi[" << r << "];\n";
         {
             const auto &U = p.info.upper;
             const auto &L = p.info.lower;
@@ -93,7 +100,7 @@ namespace
         if (!p.info.iBit)
         {
             if (isBranchOp(op))
-                lowerCall = ""; // handled by the control code
+                lowerCall = "";
             else if (isXgkick(p.lower))
                 lowerCall = std::string("vu1n::xgkick(s, static_cast<uint16_t>(s.vi[") + std::to_string((p.lower >> 11) & 0xF) + "]));";
             else
@@ -132,136 +139,172 @@ namespace
         }
     }
 
+    // Jump to pair idx: a label inside this segment, otherwise back to the driver.
     std::string target(uint32_t idx)
     {
-        if (idx >= g_count)
+        if (idx < g_lo || idx >= g_hi)
             return "return " + std::to_string(idx) + ";";
         return "{ if (--s.budget < 0) return " + std::to_string(idx) + "; goto L" + std::to_string(idx) + "; }";
+    }
+
+    std::string emitSegment(uint32_t lo, uint32_t hi, const std::string &fname, const std::string &srcName)
+    {
+        g_lo = lo;
+        g_hi = hi;
+        std::ostringstream o;
+        o << "// Generated by vu1_gen (" << srcName << ", pairs " << lo << ".." << hi - 1 << "). Do not edit.\n";
+        o << "#include \"runtime/ps2_vu1_native.h\"\n#include <cstring>\n\n";
+        o << "extern \"C\" int32_t " << fname << "(vu1n::State &s, uint32_t entry)\n{\n";
+        o << "    uint32_t dyn = 0;\n    (void)dyn;\n";
+        o << "    switch (entry)\n    {\n";
+        for (uint32_t n = lo; n < hi; ++n)
+            o << "    case " << n << ": goto L" << n << ";\n";
+        o << "    default: return static_cast<int32_t>(entry);\n    }\n";
+
+        for (uint32_t n = lo; n < hi; ++n)
+        {
+            const Pair &p = g_pairs[n];
+            o << "L" << n << ":\n    {\n";
+            if (p.info.reserved)
+            {
+                ++g_unsupported;
+                o << "    return " << n << "; // reserved/unsupported instruction\n    }\n";
+                continue;
+            }
+            const uint32_t op = lowerOp(p);
+            const bool branch = !p.info.iBit && isBranchOp(op);
+            const bool slotOk = n + 1 < kPairs && !g_pairs[n + 1].info.reserved &&
+                                !(!g_pairs[n + 1].info.iBit && isBranchOp(lowerOp(g_pairs[n + 1])));
+            if (branch)
+            {
+                if (!slotOk)
+                {
+                    ++g_unsupported;
+                    o << "    return " << n << "; // branch with unsupported delay slot\n    }\n";
+                    continue;
+                }
+                const uint32_t l = p.lower;
+                const int it = (l >> 16) & 0xF, is = (l >> 11) & 0xF;
+                const uint32_t tgt = ((8u * n + 8u + static_cast<int32_t>(imm11(l)) * 8) & kPcMask) / 8u;
+                emitBody(o, n);
+                o << "    bool take = ";
+                switch (op)
+                {
+                case 0x20: case 0x21: case 0x24: case 0x25: o << "true"; break;
+                case 0x28: o << "static_cast<int16_t>(" << viRead(n, is) << ") == static_cast<int16_t>(" << viRead(n, it) << ")"; break;
+                case 0x29: o << "static_cast<int16_t>(" << viRead(n, is) << ") != static_cast<int16_t>(" << viRead(n, it) << ")"; break;
+                case 0x2C: o << "static_cast<int16_t>(" << viRead(n, is) << ") < 0"; break;
+                case 0x2D: o << "static_cast<int16_t>(" << viRead(n, is) << ") > 0"; break;
+                case 0x2E: o << "static_cast<int16_t>(" << viRead(n, is) << ") <= 0"; break;
+                case 0x2F: o << "static_cast<int16_t>(" << viRead(n, is) << ") >= 0"; break;
+                }
+                o << ";\n";
+                if (op == 0x24 || op == 0x25)
+                {
+                    o << "    dyn = (static_cast<uint32_t>(static_cast<uint16_t>(s.vi[" << is << "])) * 8u & 0x3FFFu) >> 3;\n";
+                    if (op == 0x25 && it != 0)
+                        o << "    s.vi[" << it << "] = static_cast<int16_t>(" << (n + 2) << ");\n";
+                }
+                else if (op == 0x21 && it != 0)
+                    o << "    s.vi[" << it << "] = static_cast<int16_t>(" << (n + 2) << ");\n";
+                emitBody(o, n + 1);
+                if (op == 0x24 || op == 0x25)
+                    o << "    if (--s.budget < 0) return static_cast<int32_t>(dyn);\n    goto Ldyn;\n";
+                else if (op == 0x20 || op == 0x21)
+                    o << "    " << target(tgt) << "\n";
+                else
+                    o << "    if (take) { " << target(tgt) << " }\n    " << target(n + 2) << "\n";
+                o << "    }\n";
+                continue;
+            }
+            emitBody(o, n);
+            if (p.info.eBit)
+            {
+                if (!slotOk)
+                {
+                    ++g_unsupported;
+                    o << "    return " << n << "; // E-bit with an unsupported delay slot\n    }\n";
+                    continue;
+                }
+                emitBody(o, n + 1);
+                o << "    vu1n::flush(s);\n    return -1;\n    }\n";
+                continue;
+            }
+            if (n + 1 < hi)
+                o << "    }\n";
+            else
+                o << "    return " << (n + 1) << ";\n    }\n";
+        }
+        o << "Ldyn:\n    switch (dyn)\n    {\n";
+        for (uint32_t n = lo; n < hi; ++n)
+            o << "    case " << n << ": goto L" << n << ";\n";
+        o << "    default: return static_cast<int32_t>(dyn);\n    }\n}\n";
+        return o.str();
     }
 } // namespace
 
 int main(int argc, char **argv)
 {
-    if (argc < 4)
+    if (argc < 3)
     {
-        std::fprintf(stderr, "usage: vu1_gen image.bin out.cpp name\n");
+        std::fprintf(stderr, "usage: vu1_gen <outdir> image.bin [image.bin ...]\n");
         return 2;
     }
-    std::ifstream f(argv[1], std::ios::binary);
-    std::vector<uint8_t> img((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    if (img.size() < kPairs * 8)
-    {
-        std::fprintf(stderr, "image too small\n");
-        return 2;
-    }
+    const std::string outdir = argv[1];
     VU1Interpreter vu;
-    g_pairs.assign(kPairs, Pair{});
-    for (uint32_t i = 0; i < kPairs; ++i)
+    std::set<std::pair<uint32_t, uint64_t>> done;
+    std::vector<std::pair<uint32_t, uint64_t>> order;
+    unsigned written = 0;
+    for (int a = 2; a < argc; ++a)
     {
-        std::memcpy(&g_pairs[i].lower, &img[i * 8], 4);
-        std::memcpy(&g_pairs[i].upper, &img[i * 8 + 4], 4);
-        g_pairs[i].info = vu.analyzePair(g_pairs[i].lower, g_pairs[i].upper);
-        g_pairs[i].present = true;
-        if (g_pairs[i].lower || g_pairs[i].upper)
-            g_count = i + 1;
+        std::ifstream f(argv[a], std::ios::binary);
+        std::vector<uint8_t> img((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (img.size() < kPairs * 8)
+        {
+            std::fprintf(stderr, "skip %s (size)\n", argv[a]);
+            continue;
+        }
+        g_pairs.assign(kPairs, Pair{});
+        uint32_t last = 0;
+        for (uint32_t i = 0; i < kPairs; ++i)
+        {
+            std::memcpy(&g_pairs[i].lower, &img[i * 8], 4);
+            std::memcpy(&g_pairs[i].upper, &img[i * 8 + 4], 4);
+            g_pairs[i].info = vu.analyzePair(g_pairs[i].lower, g_pairs[i].upper);
+            if (g_pairs[i].lower || g_pairs[i].upper)
+                last = i + 1;
+        }
+        for (uint32_t seg = 0; seg * kSeg < last; ++seg)
+        {
+            const uint64_t h = vu1n::hashWindow(img.data(), seg);
+            if (!done.insert({seg, h}).second)
+                continue;
+            order.push_back({seg, h});
+            char fname[96], path[512];
+            std::snprintf(fname, sizeof fname, "vu1_seg_%u_%016llx", seg, static_cast<unsigned long long>(h));
+            std::snprintf(path, sizeof path, "%s/seg_%u_%016llx.cpp", outdir.c_str(), seg, static_cast<unsigned long long>(h));
+            std::ofstream out(path);
+            out << emitSegment(seg * kSeg, std::min(kPairs, (seg + 1) * kSeg), fname, argv[a]);
+            ++written;
+        }
     }
-
-    std::ostringstream o;
-    o << "// Generated by vu1_gen from " << argv[1] << " (" << g_count << " pairs). Do not edit.\n";
-    o << "#include \"runtime/ps2_vu1_native.h\"\n#include <cstring>\n\n";
-    o << "extern \"C\" int32_t vu1_prog_" << argv[3] << "(vu1n::State &s, uint32_t entry)\n{\n";
-    o << "    int32_t ov[16] = {0};\n    uint32_t dyn = 0;\n    (void)ov; (void)dyn;\n    vu1n::startProgram(s);\n";
-    o << "    switch (entry)\n    {\n";
-    for (uint32_t n = 0; n < g_count; ++n)
-        o << "    case " << n << ": goto L" << n << ";\n";
-    o << "    default: return static_cast<int32_t>(entry);\n    }\n";
-
-    for (uint32_t n = 0; n < g_count; ++n)
+    std::ostringstream r;
+    r << "// Generated by vu1_gen. Do not edit.\n#include \"runtime/ps2_vu1_native.h\"\n\nextern \"C\"\n{\n";
+    for (auto &k : order)
+        r << "int32_t vu1_seg_" << k.first << "_" << std::hex << std::setfill('0') << std::setw(16) << k.second << std::dec << "(vu1n::State &, uint32_t);\n";
+    r << "}\n\nnamespace vu1n\n{\nSegFn findSegment(uint32_t seg, uint64_t hash)\n{\n    switch (seg)\n    {\n";
+    std::map<uint32_t, std::vector<uint64_t>> bySeg;
+    for (auto &k : order)
+        bySeg[k.first].push_back(k.second);
+    for (auto &kv : bySeg)
     {
-        const Pair &p = g_pairs[n];
-        o << "L" << n << ":\n    {\n";
-        if (p.info.reserved)
-        {
-            ++g_unsupported;
-            o << "    return " << n << "; // reserved/unsupported instruction\n    }\n";
-            continue;
-        }
-        const uint32_t op = lowerOp(p);
-        const bool branch = !p.info.iBit && isBranchOp(op);
-        const bool delaySlotOk = n + 1 < g_count && !(g_pairs[n + 1].info.reserved) &&
-                                 !(!g_pairs[n + 1].info.iBit && isBranchOp(lowerOp(g_pairs[n + 1])));
-        if (branch)
-        {
-            ++g_branches;
-            if (!delaySlotOk)
-            {
-                ++g_unsupported;
-                o << "    return " << n << "; // branch with unsupported delay slot\n    }\n";
-                continue;
-            }
-            const uint32_t l = p.lower;
-            const int it = (l >> 16) & 0xF, is = (l >> 11) & 0xF;
-            const uint32_t tgtPc = (8u * n + 8u + static_cast<int32_t>(imm11(l)) * 8) & kPcMask;
-            const uint32_t tgt = tgtPc / 8u;
-            // Evaluate the condition at this pair, execute the pair, then its delay slot, then jump.
-            emitBody(o, n);
-            o << "    bool take = ";
-            switch (op)
-            {
-            case 0x20: case 0x21: o << "true"; break;
-            case 0x24: case 0x25: o << "true"; break;
-            case 0x28: o << "static_cast<int16_t>(" << viRead(n, is) << ") == static_cast<int16_t>(" << viRead(n, it) << ")"; break;
-            case 0x29: o << "static_cast<int16_t>(" << viRead(n, is) << ") != static_cast<int16_t>(" << viRead(n, it) << ")"; break;
-            case 0x2C: o << "static_cast<int16_t>(" << viRead(n, is) << ") < 0"; break;
-            case 0x2D: o << "static_cast<int16_t>(" << viRead(n, is) << ") > 0"; break;
-            case 0x2E: o << "static_cast<int16_t>(" << viRead(n, is) << ") <= 0"; break;
-            case 0x2F: o << "static_cast<int16_t>(" << viRead(n, is) << ") >= 0"; break;
-            }
-            o << ";\n";
-            if (op == 0x24 || op == 0x25)
-            {
-                ++g_jr;
-                o << "    dyn = (static_cast<uint32_t>(static_cast<uint16_t>(s.vi[" << is << "])) * 8u & 0x3FFFu) >> 3;\n";
-                if (op == 0x25 && it != 0)
-                    o << "    s.vi[" << it << "] = static_cast<int16_t>(" << (n + 2) << ");\n";
-            }
-            else if (op == 0x21 && it != 0)
-                o << "    s.vi[" << it << "] = static_cast<int16_t>(" << (n + 2) << ");\n";
-            emitBody(o, n + 1);
-            if (op == 0x24 || op == 0x25)
-                o << "    if (--s.budget < 0) return static_cast<int32_t>(dyn);\n    goto Ldyn;\n";
-            else if (op == 0x20 || op == 0x21)
-                o << "    " << target(tgt) << "\n";
-            else
-                o << "    if (take) { " << target(tgt) << " }\n    " << target(n + 2) << "\n";
-            o << "    }\n";
-            continue;
-        }
-        emitBody(o, n);
-        if (p.info.eBit)
-        {
-            if (!delaySlotOk && n + 1 < g_count && !g_pairs[n + 1].info.reserved)
-            {
-                ++g_unsupported;
-                o << "    return " << n << "; // E-bit with a branch in its delay slot\n    }\n";
-                continue;
-            }
-            emitBody(o, n + 1);
-            o << "    vu1n::flush(s);\n    return -1;\n    }\n";
-            continue;
-        }
-        if (n + 1 < g_count)
-            o << "    }\n";
-        else
-            o << "    return " << (n + 1) << ";\n    }\n";
+        r << "    case " << kv.first << ":\n";
+        for (uint64_t h : kv.second)
+            r << "        if (hash == 0x" << std::hex << std::setfill('0') << std::setw(16) << h << std::dec << "ull) return &vu1_seg_" << kv.first << "_" << std::hex << std::setfill('0') << std::setw(16) << h << std::dec << ";\n";
+        r << "        return nullptr;\n";
     }
-    o << "Ldyn:\n    switch (dyn)\n    {\n";
-    for (uint32_t n = 0; n < g_count; ++n)
-        o << "    case " << n << ": goto L" << n << ";\n";
-    o << "    default: return static_cast<int32_t>(dyn);\n    }\n}\n";
-
-    std::ofstream out(argv[2]);
-    out << o.str();
-    std::fprintf(stderr, "vu1_gen: %u pairs, %u branches (%u JR/JALR), %u unsupported\n", g_count, g_branches, g_jr, g_unsupported);
+    r << "    default: return nullptr;\n    }\n}\n} // namespace vu1n\n";
+    std::ofstream(outdir + "/vu1_registry.cpp") << r.str();
+    std::fprintf(stderr, "vu1_gen: %u distinct segments written to %s (%u unsupported pairs)\n", written, outdir.c_str(), g_unsupported);
     return 0;
 }
