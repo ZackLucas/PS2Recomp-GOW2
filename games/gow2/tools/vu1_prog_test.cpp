@@ -8,6 +8,7 @@
 #include "runtime/ps2_vu1_native.h"
 
 #include <cfenv>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -47,6 +48,8 @@ int main(int argc, char **argv)
     VU1Interpreter vu;
     int cases = 0, noncomparable = 0, equal = 0, badMem = 0, badRegs = 0, badPkt = 0, nativeExit = 0, interpBudget = 0;
     long pktsTotal = 0;
+    double benchInterp = 0, benchNative = 0;
+    long benchCalls = 0;
     const int kBudget = 65536;
     for (int ai = 2; ai < argc; ++ai)
     {
@@ -83,6 +86,33 @@ int main(int argc, char **argv)
         const int32_t rc = vu1_prog_test(a, startPC / 8);
         std::fesetround(prev);
 
+        if (getenv("VU1_BENCH") && interpEnded && rc == -1)
+        {
+            const int reps = atoi(getenv("VU1_BENCH"));
+            vu.setPairTrace(nullptr, nullptr);
+            vu.setXgkickSink([](void *, const uint8_t *, uint32_t) {}, nullptr);
+            auto t0 = std::chrono::steady_clock::now();
+            for (int k = 0; k < reps; ++k)
+            {
+                std::memcpy(data.data(), in.data() + sizeof(hdr) + sizeof(init), data.size());
+                std::memcpy(&vu.state(), &init, sizeof(init));
+                vu.execute(code.data(), PS2_VU1_CODE_SIZE, data.data(), PS2_VU1_DATA_SIZE, gs, nullptr, startPC, top, itop, kBudget);
+            }
+            auto t1 = std::chrono::steady_clock::now();
+            a.trace = nullptr; a.sink = [](void *, const uint8_t *, uint32_t) {};
+            const int prev2 = std::fegetround();
+            std::fesetround(FE_TOWARDZERO);
+            for (int k = 0; k < reps; ++k)
+            {
+                std::memcpy(nmem.data(), in.data() + sizeof(hdr) + sizeof(init), nmem.size());
+                vu1_prog_test(a, startPC / 8);
+            }
+            std::fesetround(prev2);
+            auto t2 = std::chrono::steady_clock::now();
+            benchInterp += std::chrono::duration<double>(t1 - t0).count();
+            benchNative += std::chrono::duration<double>(t2 - t1).count();
+            benchCalls += reps;
+        }
         ++cases;
         if (getenv("VU1_TRACE") && interpEnded && rc == -1)
         {
@@ -123,5 +153,6 @@ int main(int argc, char **argv)
     std::printf("cases %d: comparable %d (interp hit budget %d, native left translated area %d), %ld packets\n", cases, comparable, interpBudget, nativeExit, pktsTotal);
     std::printf("  identical (memory + registers + packets): %d  (%.1f%%)\n", equal, comparable ? 100.0 * equal / comparable : 0.0);
     std::printf("  mismatches: memory %d, registers %d, XGKICK packets %d\n", badMem, badRegs, badPkt);
+    if (benchCalls) std::printf("BENCH %ld calls: interpreter %.2f us/call, native %.2f us/call (x%.1f faster)\n", benchCalls, 1e6 * benchInterp / benchCalls, 1e6 * benchNative / benchCalls, benchInterp / benchNative);
     return 0;
 }

@@ -70,11 +70,14 @@ namespace
         {
             char hs[32];
             std::snprintf(hs, sizeof hs, "%016llx", static_cast<unsigned long long>(h));
-            static std::map<uint32_t, uint32_t> saved;
-            if (std::strncmp(hs, want, std::strlen(want)) == 0 && saved[startPC] < 60u)
+            // "all": keep 2 calls per (image, entry); otherwise 60 calls per entry of the matching image.
+            static std::map<std::pair<uint64_t, uint32_t>, uint32_t> saved;
+            const bool all = std::strcmp(want, "all") == 0;
+            uint32_t &count = saved[{all ? h : 0u, startPC}];
+            if ((all || std::strncmp(hs, want, std::strlen(want)) == 0) && count < (all ? 2u : 60u))
             {
                 char path[512];
-                std::snprintf(path, sizeof path, "%s/in_%s_pc%u_%u.bin", dir, hs, startPC, saved[startPC]++);
+                std::snprintf(path, sizeof path, "%s/in_%s_pc%u_%u.bin", dir, hs, startPC, count++);
                 if (FILE *f = std::fopen(path, "wb"))
                 {
                     const uint32_t hdr[4] = {0x4E495556u, startPC, top, itop};
