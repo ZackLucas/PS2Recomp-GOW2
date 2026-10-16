@@ -30,6 +30,7 @@
 #include "runtime/ps2_memory.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_vu1.h"
+#include "runtime/ps2_vu1_native_bridge.h"
 #include "runtime/ps2_audio.h"
 #include "runtime/ps2_pad.h"
 #include "runtime/ps2_rom_device.h"
@@ -508,6 +509,7 @@ private:
     PS2Vfs m_vfs;
     VU1Interpreter m_vu0{VU1Interpreter::Unit::VU0};
     VU1Interpreter m_vu1{VU1Interpreter::Unit::VU1};
+    Vu1NativeBridge m_vu1Native;
     R5900Context m_cpuContext;
     std::unique_ptr<EeScheduler> m_eeScheduler;
     mutable std::mutex m_eeKernelStateMutex;
