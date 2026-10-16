@@ -29,6 +29,7 @@ CPUREGS_PC = 322 + 32 + 680  # tag offset + 32-byte tag + offsetof(cpuRegisters,
 
 
 def make_env():
+    P.ensure_env()  # recreates the shared private PCSX2 data dir (it lives in /tmp) if it is missing
     ini = f"{DATA2}/PCSX2/inis/PCSX2.ini"
     if not os.path.exists(ini):
         os.makedirs(f"{DATA2}/PCSX2/inis", exist_ok=True)

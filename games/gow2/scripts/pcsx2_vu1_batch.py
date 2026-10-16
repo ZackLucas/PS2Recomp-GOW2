@@ -29,7 +29,7 @@ def main():
         os.makedirs(d, exist_ok=True)
         r = subprocess.run([RUN_ONE, cap, f"{d}/ours"], capture_output=True, text=True).stdout
         I.build_state(base, cap, f"{d}/injected.p2s")
-        res = I.run(f"{d}/injected.p2s", d)
+        res = I.run(f"{d}/injected.p2s", d) or I.run(f"{d}/injected.p2s", d)  # one retry: PCSX2 sometimes misses the save
         if not res:
             print(f"{name}: PCSX2 produced no state"); continue
         px = open(res, "rb").read()

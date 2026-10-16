@@ -117,16 +117,21 @@ hardware**:
 ## A18. Linhas e leitura local->host não suportadas na GPU; 30–78 linhas por dump de gameplay
 * **Impacto:** baixo/médio (contornos ou efeitos pequenos podem faltar). Ver `unsupported lines` em `PS2_GS_GPU_STATS=1`.
 
-## A19. VU1 nativo vs PCSX2: primeiros casos de geometria diferem (descoberto 2026-10-16, **em andamento**)
-* **Método (funciona):** `games/gow2/scripts/pcsx2_vu1_inject.py` edita um savestate do PCSX2 (código/dados/registradores
-  do VU1, TPC, bit de execução em VU0.VI[29], TOP/ITOP do VIF1, EE em `b .`), carrega num PCSX2 privado (sem MTVU e sem
-  flag hack) e lê o `vu1Memory.bin` do novo estado. `pcsx2_vu1_batch.py` faz isso para vários vetores capturados e compara.
-  Offsets derivados de `vuMicroFreeze()` (VUmicroMem.cpp) e conferidos no savestate do menu.
-* **Resultados até a pausa:** caso trivial (contadores, 4 bytes): **idêntico**. Dois casos com geometria
-  (`in_5658e46f..._pc0_1`, `in_b952acb6..._pc0_1`): PCSX2 alterou 38 qwords, nosso interpretador 36; **248 bytes
-  (20 qwords) diferem**, e o nativo difere igual ao interpretador (o nativo reproduz o interpretador; a diferença é
-  interpretador vs PCSX2).
-* **Ainda não sei a causa:** pode ser diferença real de cálculo (arredondamento, flags, instrução) ou lacuna da
-  injeção (registradores/flags/pipelines que não injetei, micro_*flags). Próximo: ver quais qwords/campos diferem
-  (se são posições X/Y/Z, cores, ou contadores) e testar a hipótese dos flags iniciais.
-* Savestates, capturas e resultados ficam fora do repositório (`~/gow2/pcsx2-ref`, `/tmp/inj`).
+## A19. VU1 nativo/interpretador vs PCSX2 (2026-10-16) — **resolvido para entradas sãs**
+* **Método:** `pcsx2_vu1_inject.py` edita um savestate do PCSX2 (código/dados/registradores do VU1, TPC, bit de execução em
+  VU0.VI[29], TOP/ITOP do VIF1, EE em `b .`), carrega num PCSX2 privado (sem MTVU e sem flag hack) e lê o `vu1Memory.bin`
+  do novo estado; `pcsx2_vu1_batch.py` repete para vários vetores; `vu1_ss_inputs.py` monta entradas a partir do próprio
+  estado do VU1 salvo pelo PCSX2. Offsets derivados de `vuMicroFreeze()` (VUmicroMem.cpp).
+* **Resultado:** com entradas sãs (estado do próprio PCSX2, até 103 qwords alterados e pacote de 3,8 KB) **6 de 6 idênticos
+  byte a byte ao PCSX2**, tanto o interpretador quanto o **nativo** (0 bytes de diferença).
+* **As diferenças iniciais** (248 bytes em 2 casos capturados do nosso runtime) vinham de entradas com registradores
+  saturados (±FLT_MAX), onde o resultado depende de como cada implementação trata overflow em cadeia. Não é prova de erro.
+
+## A20. Registradores do VU1 no nosso runtime chegam saturados (descoberto 2026-10-16) — **pista para A16**
+* **O que é:** em **844 de 845** chamadas capturadas do nosso runtime, o VU1 começa com >=3 registradores VF absurdos
+  (inf/NaN ou |x|>1e15, tipicamente ±FLT_MAX). No estado real do PCSX2 nenhum passa de ~1e12.
+* **Por que importa:** geometria calculada com matrizes/vértices saturados cai fora da tela, o que bate com os
+  desenhos do fundo do menu chegando ao GS com X/Y = 0 (A16). O VU1 em si reproduz o PCSX2; o lixo vem de **antes**
+  (dados que chegam por VIF/EE, matrizes calculadas pelo EE, ou carregamento do IOP).
+* **Como atacar:** achar o primeiro registrador/dado saturado na cadeia (qual programa VU1 o escreve, de qual memória
+  vem) e comparar com o equivalente no PCSX2 (mesmo ponto do menu).
