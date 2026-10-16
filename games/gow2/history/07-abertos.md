@@ -151,3 +151,13 @@ hardware**:
 ## A22. `989 ERROR 84 0 0 0 0` no log (driver de som da IOP, 989snd)
 * Aparece com e sem GPU/VU1 nativo (4 a 6 vezes por execução). É o módulo de som do jogo reclamando de um comando;
   provável SPU2/RPC de som não emulado. Não afeta imagem. Sem hipótese ainda.
+
+### A20, evidência nova (2026-10-16): NaN padrão do x86 na memória do VU1 — pista forte para o EE
+* A memória de dados do VU1 nas 845 capturas do nosso runtime tem **107.319 palavras `0xFFC00000`** (o NaN "real
+  indefinite" que o x86 gera em operações inválidas: 0*inf, inf-inf, 0/0), ~127 por chamada. No savestate do menu do
+  PCSX2: **0** na memória do VU1 e 8 em 32 MB de RAM do EE.
+* O VU1 não gera NaN na própria aritmética (operandos passam por `opnd`, resultados saturam), então esses NaN entram
+  como bits crus: vêm do EE/DMA. O EE do PS2 não tem NaN/Inf (saturação em ±Fmax, flush de denormais, arredondamento
+  para zero), mas as macros do FPU do EE no runtime são IEEE puro: `FPU_ADD_S/SUB_S/MUL_S/DIV_S/SQRT_S` em
+  `ps2xRuntime/include/ps2_runtime_macros.h` (~l.610). **Hipótese principal para o fundo preto**, ainda não provada.
+* Falta provar: contar `0xFFC00000` na RAM do EE do nosso runtime e achar quem escreve o primeiro.
