@@ -162,6 +162,24 @@ Resultados (build `-O2`, sem logs, dump do menu):
 4. Suíte verde em todo commit.
 5. Medir antes de otimizar.
 
+## GPU GS ligada ao runtime (16/10/2026)
+
+`PS2_GS_BACKEND=gpu` troca o rasterizador do GS por `games/gow2/tools/gs_gpu_backend.cpp`
+(`GpuGsBackend`, compilado dentro do `ps2EntryRunner` quando as ferramentas do GoW2 estão ligadas;
+gancho fraco `ps2_create_gpu_gs_backend` em `ps2xRuntime/src/main.cpp`).
+
+* **Thread própria da GPU:** o jogo só enfileira comandos (primitivas, CLUT, transferências, uploads); a
+  thread da GPU é dona do contexto GL e executa na ordem. `Present` e leituras de VRAM são idas e voltas
+  síncronas (4 MiB de volta + conversão no modelo CPU).
+* **Contexto GL:** EGL **não** convive com o contexto GLX do raylib no mesmo processo
+  (`eglMakeCurrent` falha com 0x3000); o runner usa uma janela GLFW oculta criada na thread principal.
+* `PS2_GS_GPU_STATS=1` imprime primitivas/draws/splits a cada 60 apresentações.
+* Armadilhas de CMake: o runner usa *unity build* (`SKIP_UNITY_BUILD_INCLUSION`) e propriedades de fonte
+  são por diretório (`TARGET_DIRECTORY ps2EntryRunner`).
+* **Resultado no menu vivo:** imagem idêntica à do caminho CPU; ~3 VSync/s (antes ~2). **O fundo do menu
+  (retrato do Kratos) continua ausente com a GPU: a causa está antes do GS** (IOP, VU1 ou carregamento).
+* Não suportado na GPU ainda: linhas, leitura local->host.
+
 ## Como rodar
 
 ```bash

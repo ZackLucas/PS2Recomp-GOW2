@@ -14,6 +14,11 @@
 #include <exception>
 #include <algorithm>
 #include <cstdlib>
+#include <memory>
+#include "runtime/gs/gs_frontend.h"
+
+// Provided by games/gow2/tools/gs_gpu_backend.cpp when linked in; null otherwise.
+extern "C" GSRasterBackend *ps2_create_gpu_gs_backend() __attribute__((weak));
 
 #if defined(__ANDROID__)
 #include <android/log.h>
@@ -223,6 +228,20 @@ int main(int argc, char *argv[])
         {
             std::cerr << "Failed to initialize PS2 runtime" << std::endl;
             return 1;
+        }
+
+        // Optional GPU GS backend, provided by a game vertente when it is linked in (weak symbol).
+        if (const char *gsBackend = std::getenv("PS2_GS_BACKEND"); gsBackend && std::string(gsBackend) == "gpu")
+        {
+            if (ps2_create_gpu_gs_backend)
+            {
+                runtime.gs().setRasterBackend(std::unique_ptr<GSRasterBackend>(ps2_create_gpu_gs_backend()));
+                std::cout << "GS backend: GPU" << std::endl;
+            }
+            else
+            {
+                std::cerr << "PS2_GS_BACKEND=gpu requested but this build has no GPU GS backend; using the CPU rasterizer" << std::endl;
+            }
         }
 
         if (!runtime.loadELF(filePathStr))

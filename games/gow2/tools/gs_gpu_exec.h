@@ -250,6 +250,15 @@ public:
         glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, kVramBytes, out);
     }
 
+    // Replaces the whole VRAM with a host copy (after finishing queued draws).
+    void uploadVram(const uint8_t *vram)
+    {
+        flushDraws();
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_buf[kVram]);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, kVramBytes, vram);
+        glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    }
+
     void finish() { flushDraws(); glFinish(); }
     const Stats &stats() const { return m_stats; }
 

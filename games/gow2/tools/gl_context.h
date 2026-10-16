@@ -34,24 +34,42 @@ inline bool initContext()
         dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
         EGLint maj, min;
         if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, &maj, &min))
+        {
+            fprintf(stderr, "[gl] eglGetDisplay/eglInitialize failed (0x%x)\n", eglGetError());
             return false;
+        }
     }
     if (!eglBindAPI(EGL_OPENGL_API))
+    {
+        fprintf(stderr, "[gl] eglBindAPI failed (0x%x)\n", eglGetError());
         return false;
+    }
     const EGLint cfgAttr[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
                               EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE};
     EGLConfig cfg;
     EGLint ncfg = 0;
     if (!eglChooseConfig(dpy, cfgAttr, &cfg, 1, &ncfg) || ncfg == 0)
+    {
+        fprintf(stderr, "[gl] eglChooseConfig failed (0x%x, n=%d)\n", eglGetError(), (int)ncfg);
         return false;
+    }
     const EGLint pbAttr[] = {EGL_WIDTH, 16, EGL_HEIGHT, 16, EGL_NONE};
     EGLSurface surf = eglCreatePbufferSurface(dpy, cfg, pbAttr);
+    if (surf == EGL_NO_SURFACE) fprintf(stderr, "[gl] eglCreatePbufferSurface failed (0x%x); trying a surfaceless context\n", eglGetError());
     const EGLint ctxAttr[] = {EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 5,
                               EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT, EGL_NONE};
     EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctxAttr);
     if (ctx == EGL_NO_CONTEXT)
+    {
+        fprintf(stderr, "[gl] eglCreateContext failed (0x%x)\n", eglGetError());
         return false;
-    return eglMakeCurrent(dpy, surf, surf, ctx) == EGL_TRUE;
+    }
+    if (eglMakeCurrent(dpy, surf, surf, ctx) != EGL_TRUE && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx) != EGL_TRUE)
+    {
+        fprintf(stderr, "[gl] eglMakeCurrent failed (0x%x)\n", eglGetError());
+        return false;
+    }
+    return true;
 }
 
 inline GLuint compile(GLenum type, const char *src)

@@ -58,3 +58,14 @@ if(GOW2_EGL_LIB AND GOW2_GL_LIB)
     target_compile_definitions(gow2_gs_gpu_replay PRIVATE GOW2_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
     target_link_libraries(gow2_gs_gpu_replay PRIVATE ps2_runtime ${GOW2_EGL_LIB} ${GOW2_GL_LIB})
 endif()
+
+# GPU GS backend for the live runtime: compiled into ps2EntryRunner and enabled with PS2_GS_BACKEND=gpu.
+if(TARGET ps2EntryRunner AND GOW2_EGL_LIB AND GOW2_GL_LIB)
+    target_sources(ps2EntryRunner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/gs_gpu_backend.cpp)
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/gs_gpu_backend.cpp TARGET_DIRECTORY ps2EntryRunner PROPERTIES
+        SKIP_PRECOMPILE_HEADERS ON
+        SKIP_UNITY_BUILD_INCLUSION ON
+        INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/ps2xRuntime/include;${CMAKE_CURRENT_SOURCE_DIR}"
+        COMPILE_DEFINITIONS "GOW2_GLFW_CONTEXT=1;GOW2_SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\"")
+    target_link_libraries(ps2EntryRunner PRIVATE ${GOW2_EGL_LIB} ${GOW2_GL_LIB})
+endif()
