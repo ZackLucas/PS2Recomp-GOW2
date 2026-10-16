@@ -52,3 +52,11 @@
 * **SSH porta 22 pode ficar bloqueada:** `GIT_SSH_COMMAND='ssh -p 443 -o HostName=ssh.github.com -o HostKeyAlias=github.com' git push ...`
   (usa a chave já confiável de github.com; não altera configuração nem aceita chave nova).
 
+
+## Otimizar pelo perfil sem medir o custo por unidade (2026-10-16)
+* O `perf` mostrou `vu1n::fmac` com 12,8% da CPU e parecia o alvo óbvio. Duas tentativas (inline forçado de `fmac`/`op_*`;
+  caminho rápido sem conta em `double` quando o resultado é normal, 152.000 casos ainda idênticos) deram **0% de ganho**
+  no benchmark (23,2 µs/chamada antes e depois).
+* Conta: ~4.700 pares em 23 µs = ~5 ns por par, já rápido. O VU1 pesa ~30% do tempo porque são ~8 mil chamadas por segundo,
+  não porque cada chamada seja lenta. Ganhar mais ali exige reduzir **chamadas** ou trabalho por par, não micro-otimizar.
+* Regra: antes de otimizar uma função do perfil, dividir (tempo total ÷ chamadas) e comparar com o custo teórico.
