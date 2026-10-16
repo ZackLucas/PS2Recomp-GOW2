@@ -5,6 +5,8 @@
 #include "runtime/ps2_vu1_native.h"
 
 #include <cstdint>
+#include <cstdio>
+#include <map>
 #include <vector>
 
 class PS2Memory;
@@ -32,6 +34,10 @@ public:
     };
     const Stats &stats() const { return m_stats; }
 
+    // Per-entry-PC tallies of the calls made since the last report (PS2_PERF_STATS): prints calls, GIF packets and
+    // VU cycles per guest VSync, then starts a new window.
+    void reportWindow(std::FILE *out, uint64_t vsyncs);
+
 private:
     using FindFn = vu1n::SegFn (*)(uint32_t seg, uint64_t hash);
     FindFn m_find = nullptr;
@@ -40,6 +46,11 @@ private:
     std::vector<uint8_t> m_snapshot;
     std::vector<std::vector<uint8_t>> m_packets;
     Stats m_stats;
+    struct EntryTally
+    {
+        uint64_t calls = 0, packets = 0, bytes = 0, cycles = 0;
+    };
+    std::map<uint32_t, EntryTally> m_tally;
     bool m_verify = false;
     VU1Interpreter m_ref{VU1Interpreter::Unit::VU1};
     std::vector<uint8_t> m_refData;

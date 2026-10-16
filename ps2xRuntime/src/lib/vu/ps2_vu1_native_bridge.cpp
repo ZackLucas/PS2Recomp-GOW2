@@ -1,6 +1,7 @@
 #include "runtime/ps2_vu1_native_bridge.h"
 #include "runtime/ps2_memory.h"
 
+#include <algorithm>
 #include <cfenv>
 #include <cstdio>
 #include <cstdlib>
@@ -108,6 +109,12 @@ bool Vu1NativeBridge::tryRun(VU1Interpreter &vu, PS2Memory &memory, GS &gs, cons
     st.top = top; st.itop = itop;
     st.ebit = false; st.haltAfterDelaySlot = false; st.stoppedByD = false; st.stoppedByT = false;
     st.branchPending = false;
+    EntryTally &tally = m_tally[startPC];
+    ++tally.calls;
+    tally.cycles += a.cyc;
+    tally.packets += m_packets.size();
+    for (const auto &pkt : m_packets)
+        tally.bytes += pkt.size();
     for (const auto &pkt : m_packets)
         memory.submitGifPacket(GifPathId::Path1, pkt.data(), static_cast<uint32_t>(pkt.size()));
     if ((++m_stats.native & 0x3FFF) == 0 && std::getenv("PS2_VU1_NATIVE_STATS"))
@@ -200,4 +207,25 @@ void Vu1NativeBridge::verify(VU1Interpreter &vu, GS &gs, const uint8_t *code, ui
                      (unsigned long long)m_stats.verified, (unsigned long long)m_stats.identical,
                      (unsigned long long)m_stats.badMem, (unsigned long long)m_stats.badRegs,
                      (unsigned long long)m_stats.badPackets, (unsigned long long)m_stats.notComparable);
+}
+
+void Vu1NativeBridge::reportWindow(std::FILE *out, uint64_t vsyncs)
+{
+    if (m_tally.empty() || vsyncs == 0)
+        return;
+    EntryTally total;
+    for (const auto &[pc, t] : m_tally)
+    {
+        total.calls += t.calls; total.packets += t.packets; total.bytes += t.bytes; total.cycles += t.cycles;
+    }
+    const double v = static_cast<double>(vsyncs);
+    std::fprintf(out, "[vu1/vsync] calls=%.0f packets=%.0f KB=%.0f vu-cycles=%.0f\n", total.calls / v, total.packets / v,
+                 total.bytes / v / 1024.0, total.cycles / v);
+    std::vector<std::pair<uint32_t, EntryTally>> rows(m_tally.begin(), m_tally.end());
+    std::sort(rows.begin(), rows.end(), [](const auto &x, const auto &y) { return x.second.calls > y.second.calls; });
+    for (size_t i = 0; i < rows.size() && i < 6; ++i)
+        std::fprintf(out, "   pc=%-4u calls/vsync=%-7.1f packets/call=%-5.2f bytes/call=%-7.0f cycles/call=%.0f\n", rows[i].first,
+                     rows[i].second.calls / v, double(rows[i].second.packets) / rows[i].second.calls,
+                     double(rows[i].second.bytes) / rows[i].second.calls, double(rows[i].second.cycles) / rows[i].second.calls);
+    m_tally.clear();
 }

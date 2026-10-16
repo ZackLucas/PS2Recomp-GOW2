@@ -2694,6 +2694,7 @@ void PS2Runtime::run()
                     const uint64_t vsync = m_eeScheduler->currentVSyncTick();
                     std::fprintf(stderr, "[perf] vsync/s=%.1f flips/s=%.1f\n",
                                  static_cast<double>(vsync - windowVsync) / seconds, flips / seconds);
+                    m_vu1Native.reportWindow(stderr, vsync - windowVsync);
                     windowStart = now;
                     windowVsync = vsync;
                     flips = 0;
