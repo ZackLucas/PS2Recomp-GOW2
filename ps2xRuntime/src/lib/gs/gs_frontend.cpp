@@ -3,6 +3,9 @@
 #include "ps2_log.h"
 #include "runtime/ps2_memory.h"
 #include <atomic>
+#include <map>
+#include <mutex>
+#include <string>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -12,6 +15,19 @@
 
 namespace
 {
+    std::mutex g_gsLogMutex;
+    std::map<std::string, uint32_t> g_gsLogTex;
+    struct GsLogDump
+    {
+        ~GsLogDump()
+        {
+            if (!std::getenv("PS2_GS_LOG"))
+                return;
+            for (const auto &kv : g_gsLogTex)
+                std::fprintf(stderr, "[gslog] tex %s : %u draws\n", kv.first.c_str(), kv.second);
+        }
+    } g_gsLogDump;
+    std::atomic<uint32_t> g_gsLogDraws{0}, g_gsLogTexSprites{0};
     static constexpr uint32_t kHostFrameWidth = 640u;
 
     GSPrimReg decodePrimRegister(uint64_t value)
@@ -538,6 +554,19 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 
 void GS::latchHostPresentationFrame()
 {
+    if (std::getenv("PS2_GS_LOG"))
+    {
+        std::fprintf(stderr, "[gslog] latch draws=%u texSprites=%u\n", g_gsLogDraws.load(), g_gsLogTexSprites.load());
+        g_gsLogDraws = 0;
+        g_gsLogTexSprites = 0;
+        static uint32_t latchCount = 0;
+        if (++latchCount % 150 == 0)
+        {
+            std::lock_guard<std::mutex> lk(g_gsLogMutex);
+            for (const auto &kv : g_gsLogTex)
+                std::fprintf(stderr, "[gslog] tex@%u %s : %u draws\n", latchCount, kv.first.c_str(), kv.second);
+        }
+    }
     GSPresentationRequest request{};
     {
         std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
@@ -1404,6 +1433,10 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
             command.trxreg = m_trxreg;
             command.direction = m_trxdir;
             m_backend->BeginTransfer(command);
+            static const bool logGs = std::getenv("PS2_GS_LOG") != nullptr;
+            if (logGs && m_trxdir == 0 && m_trxreg.rrw * m_trxreg.rrh >= 4096)
+                std::fprintf(stderr, "[gslog] upload dbp=0x%x dbw=%u psm=0x%x %ux%u\n", m_bitbltbuf.dbp, m_bitbltbuf.dbw,
+                             m_bitbltbuf.dpsm, m_trxreg.rrw, m_trxreg.rrh);
         }
         recordTransferDebugEventUnlocked();
         break;
@@ -1589,6 +1622,22 @@ void GS::vertexKick(bool drawing)
         GSPrimitiveBatch batch = buildDrawBatch(needed);
         updatePreferredDisplaySourceForDraw(batch);
         m_backend->Submit(batch);
+        static const bool logGsD = std::getenv("PS2_GS_LOG") != nullptr;
+        if (logGsD)
+        {
+            ++g_gsLogDraws;
+            if (m_prim.tme && m_prim.type == GS_PRIM_SPRITE)
+                ++g_gsLogTexSprites;
+            if (m_prim.tme)
+            {
+                const GSContext &c = batch.state.context;
+                char key[96];
+                std::snprintf(key, sizeof key, "fbp=0x%x tbp0=0x%x tpsm=0x%x %ux%u cbp=0x%x", c.frame.fbp, c.tex0.tbp0,
+                              c.tex0.psm, 1u << c.tex0.tw, 1u << c.tex0.th, c.tex0.cbp);
+                std::lock_guard<std::mutex> lk(g_gsLogMutex);
+                ++g_gsLogTex[key];
+            }
+        }
         recordDrawDebugEventUnlocked(needed);
     }
 
