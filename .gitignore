@@ -23,3 +23,43 @@ android/app/.cxx/
 android/local.properties
 android/.gradle/ 
 .idea/
+
+# --- Legal safety: never commit copyrighted game/console content ---
+# Game images, executables and extracted assets
+*.iso
+*.bin
+*.cue
+*.img
+*.chd
+*.cso
+*.elf
+*.irx
+*.mdf
+*.nrg
+# Console BIOS / ROM dumps and memory cards
+*.rom
+*.rom0
+*.rom1
+*.erom
+*.mc2
+*.mcd
+*.ps2
+scph*
+SCPH*
+# Retail executables named after the disc serial (e.g. SLUS_203.12)
+SLUS_*
+SCUS_*
+SLES_*
+SCES_*
+SLPS_*
+SLPM_*
+SCPS_*
+# Disc contents (archives, video, audio) and generated recompiled code
+*.pss
+*.vag
+*.wad
+*.pkg
+game_assets/
+disc/
+extracted/
+recompiled_output/

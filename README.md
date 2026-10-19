@@ -188,6 +188,18 @@ Starter file:
 
 Other fields (Wikidata item, target platforms, maintainers, links, what help is wanted) and the JSON Schema are in the [specification](https://recomp.fyi/spec).
 
+### Legal Notice
+
+This is an unofficial, independent, non-commercial project. It is **not affiliated with, endorsed by, or sponsored by** Sony Interactive Entertainment or any game developer or publisher. All trademarks and game names belong to their respective owners.
+
+* This repository contains **no** game code, assets, disc images, executables or console BIOS, and none may be contributed or linked.
+* You must **own the original game** and extract the files from **your own disc**. Piracy is not supported or discussed here.
+* This tool does not bypass copy protection or DRM. Do not submit code or requests that do.
+* Output generated from a game ELF is derived from copyrighted material: do not publish or redistribute it.
+* The software is provided "as is" under the GPLv3 (see `LICENSE`), without warranty. This notice is not legal advice.
+
+See [DISCLAIMER.md](DISCLAIMER.md) for the contribution and community rules.
+
 ### Limitations
  
 * Performance is very bad for VU and GS
