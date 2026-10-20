@@ -1368,7 +1368,14 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         }
 
                         {
-                            static const bool dmaFind = std::getenv("PS2_DMA_FIND") != nullptr;
+                            // PS2_DMA_FIND=<w0hex>,<w1hex>: report chain data blocks containing two consecutive words
+                            static uint32_t findW0 = 0, findW1 = 0;
+                            static const bool dmaFind = [] {
+                                const char *e = std::getenv("PS2_DMA_FIND");
+                                if (!e) return false;
+                                if (std::sscanf(e, "%x,%x", &findW0, &findW1) != 2) { findW0 = 0x3ff8e38fu; findW1 = 0xc025ed0au; }
+                                return true;
+                            }();
                             static int dmaFindN = 0;
                             if (dmaFind && dmaFindN < 8 && !scratch)
                             {
@@ -1377,7 +1384,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                                     uint32_t w0, w1;
                                     std::memcpy(&w0, base2 + src + o, 4);
                                     std::memcpy(&w1, base2 + src + o + 4, 4);
-                                    if (w0 == 0x3ff8e38fu && w1 == 0xc025ed0au)
+                                    if (w0 == findW0 && w1 == findW1)
                                     {
                                         ++dmaFindN;
                                         uint32_t w2, w3;
@@ -1712,6 +1719,22 @@ bool PS2Memory::processScratchpadDestChain(uint32_t channelBase, uint32_t chcr)
         const uint32_t bytes = count * 16u;
         if (mainOffset > PS2_RAM_SIZE || bytes > PS2_RAM_SIZE - mainOffset)
             return false;
+        {
+            // PS2_SPR_LOG=<lo>-<hi> (hex RDRAM): log fromSPR chain copies that land in the range
+            static uint32_t slo = 1, shi = 0;
+            static const bool sprLog = [] {
+                const char *e = std::getenv("PS2_SPR_LOG");
+                if (e) std::sscanf(e, "%x-%x", &slo, &shi);
+                return e != nullptr;
+            }();
+            static int sprLogN = 0;
+            if (sprLog && mainOffset < shi && mainOffset + bytes > slo && sprLogN++ < 60)
+            {
+                uint32_t w[4] = {};
+                std::memcpy(w, m_scratchpad + sadr, 16);
+                std::fprintf(stderr, "[sprlog] fromSPR spr@%04x -> ram@%08x %uqw first: %08x %08x %08x %08x\n", sadr, mainOffset, count, w[0], w[1], w[2], w[3]);
+            }
+        }
         for (uint32_t done = 0u; done < bytes;)
         {
             const uint32_t chunk = std::min(bytes - done, PS2_SCRATCHPAD_SIZE - sadr);

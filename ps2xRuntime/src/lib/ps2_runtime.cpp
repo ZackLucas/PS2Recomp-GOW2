@@ -60,6 +60,19 @@ extern "C" __attribute__((noinline, cold)) void ps2x_fp_report(const char *kind,
 
 void ps2WatchHit(uint32_t guestAddr, uint32_t size, uint64_t valueLo, uint64_t valueHi, const char *op, const R5900Context *ctx)
 {
+    // PS2_WATCH_WORD=<hex>: only report stores where one of the 32-bit words equals it
+    static const bool haveWord = std::getenv("PS2_WATCH_WORD") != nullptr;
+    static const uint32_t wantWord = haveWord ? static_cast<uint32_t>(std::strtoul(std::getenv("PS2_WATCH_WORD"), nullptr, 16)) : 0u;
+    if (haveWord)
+    {
+        const uint32_t ws[4] = {static_cast<uint32_t>(valueLo), static_cast<uint32_t>(valueLo >> 32),
+                                static_cast<uint32_t>(valueHi), static_cast<uint32_t>(valueHi >> 32)};
+        bool match = false;
+        for (uint32_t w : ws)
+            match = match || w == wantWord;
+        if (!match)
+            return;
+    }
     static std::atomic<int> hits{0};
     const int n = hits.fetch_add(1);
     if (n >= 400)
