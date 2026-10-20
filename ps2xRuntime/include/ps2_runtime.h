@@ -239,6 +239,11 @@ inline uint8_t ps2PathWatchExtractByteFromWrite(uint32_t writeAddr, uint32_t wat
     return static_cast<uint8_t>((valueHi >> ((byteIndex - 8u) * 8u)) & 0xFFu);
 }
 
+// PS2_WATCH=<lo>-<hi> (hex, physical RDRAM addresses): report every guest store overlapping [lo, hi). Off by default.
+inline uint32_t g_ps2WatchLo = 0;
+inline uint32_t g_ps2WatchHi = 0;
+void ps2WatchHit(uint32_t guestAddr, uint32_t size, uint64_t valueLo, uint64_t valueHi, const char *op, const R5900Context *ctx);
+
 inline void ps2TraceGuestWrite(uint8_t *rdram,
                                uint32_t guestAddr,
                                uint32_t size,
@@ -248,13 +253,12 @@ inline void ps2TraceGuestWrite(uint8_t *rdram,
                                const R5900Context *ctx)
 {
     (void)rdram;
-    (void)guestAddr;
-    (void)size;
-    (void)valueLo;
-    (void)valueHi;
-    (void)op;
-    (void)ctx;
-    // TODO we dont need this anymore so on next release it will be deleted
+    if (g_ps2WatchHi != 0u)
+    {
+        const uint32_t a = guestAddr & PS2_RAM_MASK;
+        if (a < g_ps2WatchHi && a + size > g_ps2WatchLo)
+            ps2WatchHit(guestAddr, size, valueLo, valueHi, op, ctx);
+    }
 }
 
 inline void ps2TraceGuestRangeWrite(uint8_t *rdram,

@@ -12,6 +12,8 @@
 #include <cstring>
 #include <iostream>
 #include <sstream>
+#include <atomic>
+static std::atomic<uint32_t> g_gsPresentCount{0};
 
 namespace
 {
@@ -592,6 +594,7 @@ void GS::latchHostPresentationFrame()
         }
     }
 
+    g_gsPresentCount.fetch_add(1);
     const bool hasFrame = static_cast<bool>(frame);
     const uint32_t displayFbp = frame.displayFbp;
     const uint32_t sourceFbp = frame.sourceFbp;
@@ -1651,9 +1654,18 @@ void GS::vertexKick(bool drawing)
                 {
                     static const int bgDump = std::getenv("PS2_GS_BGDUMP") ? std::atoi(std::getenv("PS2_GS_BGDUMP")) : 0;
                     static int bgN = 0;
-                    if (bgDump > 0 && c.frame.fbp == 8 && c.tex0.tw == 9 && c.tex0.th == 9 && bgN < bgDump)
+                    static const uint32_t bgAfter = std::getenv("PS2_GS_BGDUMP_AFTER") ? std::atoi(std::getenv("PS2_GS_BGDUMP_AFTER")) : 0;
+                    if (bgDump > 0 && c.frame.fbp == 8 && c.tex0.tw == 9 && c.tex0.th == 9 && bgN < bgDump && g_gsPresentCount.load() >= bgAfter)
                     {
                         ++bgN;
+                        if (bgN == bgDump)
+                            if (const char *vp = std::getenv("PS2_GS_BGDUMP_VRAM"))
+                            {
+                                std::vector<uint8_t> vv;
+                                m_backend->SnapshotVram(vv);
+                                if (FILE *vf = std::fopen(vp, "wb")) { std::fwrite(vv.data(), 1, vv.size(), vf); std::fclose(vf); }
+                                std::fprintf(stderr, "[bgdump] vram snapshot at draw %d (%zu bytes)\n", bgN, vv.size());
+                            }
                         std::fprintf(stderr, "[bgdump] #%d type=%d fst=%d tbp0=0x%x tbw=%u psm=0x%x tcc=%u tfx=%u clamp=%016llx abe=%d\n", bgN,
                                      (int)m_prim.type, (int)m_prim.fst, c.tex0.tbp0, c.tex0.tbw, c.tex0.psm, c.tex0.tcc, c.tex0.tfx,
                                      (unsigned long long)c.clamp, (int)m_prim.abe);
@@ -1665,9 +1677,10 @@ void GS::vertexKick(bool drawing)
                         }
                     }
                 }
-                char key[96];
-                std::snprintf(key, sizeof key, "fbp=0x%x tbp0=0x%x tpsm=0x%x %ux%u cbp=0x%x", c.frame.fbp, c.tex0.tbp0,
-                              c.tex0.psm, 1u << c.tex0.tw, 1u << c.tex0.th, c.tex0.cbp);
+                char key[160];
+                std::snprintf(key, sizeof key, "fbp=0x%x tbp0=0x%x tpsm=0x%x %ux%u cbp=0x%x tfx=%u abe=%d a=%llx", c.frame.fbp, c.tex0.tbp0,
+                              c.tex0.psm, 1u << c.tex0.tw, 1u << c.tex0.th, c.tex0.cbp, (unsigned)c.tex0.tfx, (int)m_prim.abe,
+                              (unsigned long long)c.alpha);
                 std::lock_guard<std::mutex> lk(g_gsLogMutex);
                 if (c.frame.fbp == 8 && c.tex0.tw == 9 && c.tex0.th == 9)
                 {

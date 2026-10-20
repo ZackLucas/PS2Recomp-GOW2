@@ -1,6 +1,37 @@
 # God of War II (SCUS_974.81) — Progresso e próximos passos
 
-> **Estado atual (2026-10-16, fim do dia) — leia isto primeiro.**
+> **Estado atual (2026-10-20) — leia isto primeiro.**
+> * **Marco: o menu agora parece o do PCSX2** (pano vermelho, cortina, ombro do Kratos, painel preto sem a inclinação de
+>   "Star Wars"). Causa: **tradução errada de instruções MMI do R5900 no recompilador**. `PEXEW` trocava pares de palavras
+>   (1<->0, 3<->2) em vez das palavras 0<->2, e `PROT3W` rotacionava as 4 palavras em vez das 3 inferiores. A função do jogo
+>   `0x1787E0` usa as duas para extrair a diagonal da matriz de projeção `(m00, m11, m22, m32)`; com os erros, `m22` e `m32`
+>   (z e w) saíam 0, a profundidade ficava constante e tudo o que passa por essa matriz saía deformado (fundo listrado,
+>   painel trapezoidal, camadas 512x512 quase sem triângulos). Não era VU1, GS, VIF nem textura.
+> * **O que foi corrigido:** macros `PS2_PEXEW/PEXEH/PEXCH/PEXCW/PROT3W/PREVH` em `ps2_runtime_macros.h` e os tradutores
+>   correspondentes em `ps2xRecomp/src/lib/mmi_translation_helpers.cpp` (agora emitem as macros). Teste
+>   `tools/mmi_test.cpp` confere cada instrução lane a lane contra a definição (falha 0/6 com as macros antigas, passa 6/6).
+>   O GoW2 só usa `PROT3W` (372 ocorrências) e `PEXEW` (169); as outras quatro estavam erradas mas sem uso.
+> * **Atenção — código gerado:** `ps2xRuntime/src/runner/*` não vai ao git. Para reproduzir a correção é preciso **regerar o
+>   C++ com o `ps2_recomp` corrigido**, ou aplicar o `sed` equivalente aos 372 `PROT3W`
+>   (`_mm_shuffle_epi32(GPR_VEC(ctx, N), _MM_SHUFFLE(0,3,2,1))` -> `PS2_PROT3W(GPR_VEC(ctx, N))`). O `PEXEW` já usa a macro.
+> * **Como se achou (cadeia de ~10 passos, todos medidos):** (1) decodificar a textura 512x512 da VRAM no instante do draw
+>   (`gs_tex_dump`): era a cornija aditiva, não o rosto; (2) lista de draws do PCSX2 vs nossa: ~9.600 vs ~5.000 triângulos por
+>   quadro, faltando só as camadas 512x512 (T4 804 vs 151, T8 ~1.600 vs 0); (3) rodar o VU1 sobre as entradas capturadas:
+>   todos os vértices saíam com ADC=1; (4) o oráculo de injeção no PCSX2 já tinha provado o VU1 inocente e a linha de
+>   projeção `q310` com z/w=0; (5) origem do buffer pelo DMA chain (RDRAM `0x569890`); (6) watchpoint de escrita
+>   (`PS2_WATCH`) mostrou um `SQ` com `ra=0x17823c`; (7) a função `0x1787E0`; (8) a matriz de origem estava certa; (9) a
+>   semântica das 4 instruções MMI à mão deu o resultado certo, o binário não; (10) comparar as macros com o R5900.
+> * Ferramentas novas: `PS2_GS_BGDUMP=N` (+`_AFTER`, `_VRAM`) vértices/estado dos draws do fundo e VRAM no instante do draw;
+>   `PS2_GS_VRAMDUMP_AT`; `PS2_WATCH=lo-hi` (hex, RDRAM física) imprime cada escrita do EE com `ra` e `s0..s4`;
+>   `PS2_EE_DUMP=addr:bytes` (no 3000º MSCAL); `PS2_DMA_FIND`; `PS2_VU1_CAPTURE_SKIP`; `scripts/gif_adc_count.py`
+>   (vértices que desenham vs suprimidos por ADC); chave do log de texturas agora com `tfx`, `abe`, `alpha`.
+> * Mesmo recorte do menu, para comparar as imagens: `~/gow2/frame_001800.png` (fora do git).
+> * Próximos passos: medir quadros/draws e velocidade com a projeção certa; comparar com o PCSX2 pixel a pixel (o rosto do
+>   Kratos aparece ou depende do instante da animação?); revisar o resto da família MMI (PMULT*, PADD*, PSUB*, PCGT*, PMAX*,
+>   PSLL*, PEXT*, PINT*, QFSRV...) contra a definição, já que o jogo usa MMI o tempo todo; só depois voltar a A21/A22 e à
+>   otimização do `fmac`.
+>
+> **(Anterior) Estado em 2026-10-16, fim do dia.**
 > * **Marco: o fundo do menu aparece ao vivo.** Causa achada e corrigida: o FPU do EE (COP1) e o VU0 em modo macro seguiam
 >   IEEE puro; o PS2 não tem NaN/Inf. `SQRT.S` de número negativo dava NaN (o PS2 usa o valor absoluto) e um `VMUL` do VU0
 >   estourava para Inf (o PS2 satura em Fmax); isso contaminava as matrizes enviadas ao VU1. Peça nova:

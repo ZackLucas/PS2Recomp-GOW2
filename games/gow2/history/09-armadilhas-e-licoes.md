@@ -83,3 +83,20 @@
 * Medir por fase (preparação, execução, escrita, entrega) antes de otimizar; a ponte parecia suspeita e custava 6% do total.
 * `perf annotate` pode travar em binários grandes: usar `perf script -F ip,sym` + histograma de endereços e `objdump`.
 * Com a máquina livre, `ninja -j<núcleos>` sem `nice`; reiniciar o build é barato (objetos prontos ficam).
+
+
+## Defeito visual 3D: seguir os dados até a origem, não o componente que "parece" culpado (2026-10-20)
+* O fundo do menu estava errado e a hipótese natural era textura, GS ou VU1. **Nenhuma estava certa.** O que funcionou foi
+  medir contra a referência em níveis: (1) o que o GS recebe (triângulos por quadro e por textura, nosso x PCSX2); (2) o que o VU1
+  emite (vértices com ADC=1); (3) o que o VU1 recebe (a linha de projeção na memória de dados); (4) quem escreve esse buffer (DMA
+  chain -> endereço de RDRAM -> watchpoint de escrita -> função do jogo -> código dela).
+* **Watchpoint de escrita do EE (`PS2_WATCH`)** com `ra` e registradores `s*` do escritor dá a função e o objeto (`s1`) em uma
+  única rodada; mais barato do que ler código no escuro.
+* **Quando a semântica "à mão" dá o resultado certo e o binário dá errado, desconfie da tradução de instrução**, não do
+  jogo. Conferir cada macro/tradutor de instrução contra a definição lane a lane com um teste que **falha com o código antigo**
+  (provar que o teste pega o defeito).
+* Instruções que mexem em lanes: lembrar que `_MM_SHUFFLE(d3,d2,d1,d0)` lista os índices do destino do mais alto para o mais
+  baixo; erros de ordem são silenciosos e só aparecem em dados específicos.
+* **Binário desatualizado engana:** depois de mudar header, código gerado e `.cpp`, conferir o horário do binário e rodar
+  uma sonda barata (ex.: `PS2_EE_DUMP`) antes de tirar conclusão de uma imagem. Não confundir "ainda igual" com "não funcionou".
+* Valor da observação do usuário: o painel preto torto era pista de que o defeito era geométrico/global (a matriz), não do fundo.

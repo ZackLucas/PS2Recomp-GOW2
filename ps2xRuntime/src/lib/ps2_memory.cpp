@@ -1367,6 +1367,28 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             maxSz2 = PS2_RAM_SIZE;
                         }
 
+                        {
+                            static const bool dmaFind = std::getenv("PS2_DMA_FIND") != nullptr;
+                            static int dmaFindN = 0;
+                            if (dmaFind && dmaFindN < 8 && !scratch)
+                            {
+                                for (uint32_t o = 0; o + 16 <= bytes && src + o + 16 <= maxSz2; o += 4)
+                                {
+                                    uint32_t w0, w1;
+                                    std::memcpy(&w0, base2 + src + o, 4);
+                                    std::memcpy(&w1, base2 + src + o + 4, 4);
+                                    if (w0 == 0x3ff8e38fu && w1 == 0xc025ed0au)
+                                    {
+                                        ++dmaFindN;
+                                        uint32_t w2, w3;
+                                        std::memcpy(&w2, base2 + src + o + 8, 4);
+                                        std::memcpy(&w3, base2 + src + o + 12, 4);
+                                        std::fprintf(stderr, "[dmafind] chain data vaddr=%08x phys=%08x off=%u block=%uqw : %08x %08x %08x %08x\n",
+                                                     srcAddr, src, o, qwCount, w0, w1, w2, w3);
+                                    }
+                                }
+                            }
+                        }
                         while (bytes > 0)
                         {
                             if (src >= maxSz2)

@@ -800,6 +800,19 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                     }
 
                     std::memcpy(m_vu1Data + destOff, lanes, sizeof(lanes));
+                    {
+                        static const bool vifFind = std::getenv("PS2_VIF_FIND") != nullptr;
+                        static int vifFindN = 0;
+                        if (vifFind && destVec >= 308 && destVec <= 316 && lanes[1] == 0xc025ed0au && vifFindN < 12)
+                        {
+                            ++vifFindN;
+                            const uint8_t *sv = srcVec;
+                            long ramOff = (sv && sv >= m_rdram && sv < m_rdram + 32u * 1024 * 1024) ? long(sv - m_rdram) : -1;
+                            long sprOff = (sv && sv >= m_scratchpad && sv < m_scratchpad + 16384) ? long(sv - m_scratchpad) : -1;
+                            std::fprintf(stderr, "[viffind] dest=%u vuAddr=%u vl=%u vn=%u cl=%u wl=%u mode=%u mask=%d src ram=%lx spr=%lx : %08x %08x %08x %08x\n",
+                                         destVec, vuAddr, vl, vn, cl, wl, vif1_regs.mode, (int)maskEnable, ramOff, sprOff, lanes[0], lanes[1], lanes[2], lanes[3]);
+                        }
+                    }
                 }
             }
             pos += totalBytes;

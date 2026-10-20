@@ -175,3 +175,16 @@ hardware**:
   vermelha/laranja), mas ainda não parece o rosto do Kratos do PCSX2.
 * **Não feito (refinamento):** flags do FPU (FCR31) e MAC/status do VU0, arredondamento para zero do EE, `CVT.W.S` com
   saturação inteira.
+
+
+## A23. Família MMI do R5900: auditar o resto contra a definição (aberta, 2026-10-20) — **prioridade alta**
+* **O que aconteceu:** `PEXEW`, `PEXEH`, `PEXCH`, `PEXCW`, `PROT3W` e `PREVH` estavam traduzidos errado (shuffles com a ordem
+  dos índices trocada). `PROT3W` e `PEXEW` quebravam a projeção do menu (ver `PROGRESS.md`). Corrigido e coberto por
+  `games/gow2/tools/mmi_test.cpp`.
+* **Risco aberto:** o jogo usa MMI o tempo todo e o resto da família nunca foi conferido: `PADD*`, `PSUB*`, `PMAX*`,
+  `PMIN*`, `PCGT*`, `PCEQ*`, `PSLL*/PSRL*/PSRA*`, `PEXT*`, `PINT*`, `PPAC*`, `PMULT*/PMADD*`, `PDIV*`, `QFSRV`, `PLZCW`,
+  e as variantes com saturação. Qualquer um com a mesma classe de erro (ordem de índices, só 64 bits escritos,
+  extensão de sinal) pode estar produzindo outros defeitos silenciosos.
+* **Plano:** estender `mmi_test.cpp` com uma implementação escalar de referência por instrução (a partir da definição), aplicada
+  às macros/tradutores, com vetores aleatórios; priorizar as usadas pelo GoW2 (contar ocorrências no código gerado).
+* **Atenção:** `ps2xRuntime/src/runner/*` é gerado e fora do git; depois de mexer nos tradutores, regerar com `ps2_recomp`.

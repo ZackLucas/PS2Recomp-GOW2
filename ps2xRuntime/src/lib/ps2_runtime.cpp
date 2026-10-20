@@ -58,6 +58,37 @@ extern "C" __attribute__((noinline, cold)) void ps2x_fp_report(const char *kind,
     std::fprintf(stderr, "\n");
 }
 
+void ps2WatchHit(uint32_t guestAddr, uint32_t size, uint64_t valueLo, uint64_t valueHi, const char *op, const R5900Context *ctx)
+{
+    static std::atomic<int> hits{0};
+    const int n = hits.fetch_add(1);
+    if (n >= 400)
+        return;
+    const uint32_t ra = ctx ? static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31])) : 0u;
+    auto reg = [&](int i) { return ctx ? static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[i])) : 0u; };
+    std::fprintf(stderr, "[watch] #%d %s addr=%08x size=%u lo=%016llx hi=%016llx ra=%08x s0=%08x s1=%08x s2=%08x s3=%08x s4=%08x sp=%08x\n", n, op, guestAddr, size,
+                 static_cast<unsigned long long>(valueLo), static_cast<unsigned long long>(valueHi), ra, reg(16), reg(17), reg(18), reg(19), reg(20), reg(29));
+}
+
+namespace
+{
+    struct Ps2WatchInit
+    {
+        Ps2WatchInit()
+        {
+            if (const char *e = std::getenv("PS2_WATCH"))
+            {
+                unsigned lo = 0, hi = 0;
+                if (std::sscanf(e, "%x-%x", &lo, &hi) == 2)
+                {
+                    g_ps2WatchLo = lo;
+                    g_ps2WatchHi = hi;
+                }
+            }
+        }
+    } g_ps2WatchInit;
+}
+
 namespace
 {
     // PS2_VU1_CAPTURE=<dir>: save every distinct VU1 micro-memory image seen at MSCAL and count calls per
@@ -100,7 +131,8 @@ namespace
             static std::map<std::pair<uint64_t, uint32_t>, uint32_t> saved;
             const bool all = std::strcmp(want, "all") == 0;
             uint32_t &count = saved[{all ? h : 0u, startPC}];
-            if ((all || std::strncmp(hs, want, std::strlen(want)) == 0) && count < (all ? 2u : 60u))
+            static const uint64_t skipCalls = std::getenv("PS2_VU1_CAPTURE_SKIP") ? std::strtoull(std::getenv("PS2_VU1_CAPTURE_SKIP"), nullptr, 10) : 0;
+            if (calls >= skipCalls && (all || std::strncmp(hs, want, std::strlen(want)) == 0) && count < (all ? 2u : 60u))
             {
                 char path[512];
                 std::snprintf(path, sizeof path, "%s/in_%s_pc%u_%u.bin", dir, hs, startPC, count++);
@@ -792,6 +824,44 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     if (const char *dumpEnv = std::getenv("PS2_EE_DUMP"))
+                                     {
+                                         static int dumpCalls = 0;
+                                         if (++dumpCalls == 3000 || dumpCalls == 3001)
+                                         {
+                                             unsigned da = 0, dn = 0;
+                                             if (std::sscanf(dumpEnv, "%x:%u", &da, &dn) == 2 && da + dn <= 32u * 1024 * 1024)
+                                             {
+                                                 const uint8_t *ram = m_memory.getRDRAM();
+                                                 for (unsigned o = 0; o < dn; o += 16)
+                                                 {
+                                                     uint32_t w[4];
+                                                     std::memcpy(w, ram + da + o, 16);
+                                                     std::fprintf(stderr, "[eedump] call%d %08x: %08x %08x %08x %08x\n", dumpCalls, da + o, w[0], w[1], w[2], w[3]);
+                                                 }
+                                             }
+                                         }
+                                     }
+                                     if (const char *findEnv = std::getenv("PS2_EE_FIND"))
+                                     {
+                                         static int findCalls = 0;
+                                         if (++findCalls == 3000)
+                                         {
+                                             const uint64_t pat = std::strtoull(findEnv, nullptr, 16);
+                                             const uint8_t *ram = m_memory.getRDRAM();
+                                             for (uint32_t a = 8; a + 32 <= 32u * 1024 * 1024; a += 4)
+                                             {
+                                                 uint64_t v;
+                                                 std::memcpy(&v, ram + a, 8);
+                                                 if (v == pat)
+                                                 {
+                                                     uint32_t w[6];
+                                                     std::memcpy(w, ram + a - 8, 24);
+                                                     std::fprintf(stderr, "[eefind] %08x: %08x %08x [%08x %08x] %08x %08x\n", a, w[0], w[1], w[2], w[3], w[4], w[5]);
+                                                 }
+                                             }
+                                         }
+                                     }
                                      vu1CaptureProgram(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, startPC, top, itop, m_vu1.state(),
                                                        m_memory.getVU1Data(), PS2_VU1_DATA_SIZE);
                                      if (!m_vu1Native.tryRun(m_vu1, m_memory, m_gs, m_memory.getVU1Code(),

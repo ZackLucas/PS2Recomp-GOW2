@@ -1,5 +1,5 @@
 // Decodes a PSMT4 texture out of a raw GS VRAM dump (PS2_GS_VRAMDUMP) into a PPM, using the CSM1 CT32 CLUT.
-//   gs_tex_dump <vram.bin> <tbp0> <tbw> <w> <h> <cbp> <csa> <out.ppm>
+//   gs_tex_dump <vram.bin> <tbp0> <tbw> <w> <h> <cbp> <csa> <out.ppm> [gray]
 #include "runtime/gs/ps2_gs_psmct32.h"
 #include "runtime/gs/ps2_gs_psmt4.h"
 #include <cstdio>
@@ -21,6 +21,7 @@ int main(int argc, char **argv)
         uint32_t a = GSPSMCT32::addrPSMCT32(cbp, 1, idx & 7, idx >> 3);
         clut[i] = *reinterpret_cast<uint32_t *>(&vram[a]);
     }
+    const bool gray = argc > 9;
     std::vector<uint8_t> img(w * h * 3);
     for (uint32_t y = 0; y < h; ++y)
         for (uint32_t x = 0; x < w; ++x)
@@ -28,7 +29,7 @@ int main(int argc, char **argv)
             uint32_t n = GSPSMT4::addrPSMT4(tbp0, tbw, x, y);
             uint8_t b = vram[n >> 1];
             uint32_t ix = (n & 1) ? (b >> 4) : (b & 15);
-            uint32_t c = clut[ix];
+            uint32_t c = gray ? (ix * 17u) * 0x010101u : clut[ix];
             uint8_t *p = &img[(y * w + x) * 3];
             p[0] = c & 255; p[1] = (c >> 8) & 255; p[2] = (c >> 16) & 255;
         }

@@ -69,3 +69,16 @@ Para os commits anteriores, ver `git log` das branches `gow2` e `gow2-gpu-gs`.
 * Erros meus: duas hipóteses de otimização erradas (inline e caminho rápido do `fmac`) e uma conta de 5 ns por par a partir
   de um único caso (corrigida); `perf annotate` travou no binário grande (usei histograma de endereços); compilei com `-j8`
   e `nice` com a máquina livre (reiniciei com `-j12`).
+
+### 2026-10-20: o menu passa a parecer o do PCSX2 (instruções MMI mal traduzidas)
+* Textura do fundo decodificada da VRAM no instante do draw (`gs_tex_dump`): a 512x512 T4 era uma cornija aditiva e o rosto do
+  Kratos vem de 3 texturas T8 512x512 (`tfx=3`) cujos draws quase não existiam na nossa execução (0 contra ~1.600 por quadro).
+* Comparação com o PCSX2: ~9.600 triângulos por quadro contra ~5.000 nossos; faltavam só as camadas 512x512. O VU1 emitia todos
+  os vértices dessas camadas com ADC=1 porque a linha de projeção chegava com z/w=0.
+* Cadeia até a causa: origem do buffer no DMA chain (`0x569890`) -> watchpoint de escrita (`PS2_WATCH`) -> função `0x1787E0`
+  -> semântica de `PEXEW`/`PROT3W` no recompilador estava errada. Correção nas macros e nos tradutores MMI; teste `mmi_test` 6/6.
+* O usuário notou que o painel preto da frente tinha perspectiva torta ("efeito Star Wars") junto do fundo quebrado: era o
+  mesmo defeito (a mesma matriz). Boa pista de quem olha a imagem e não o código.
+* Erros meus: levei algumas rodadas com binários parcialmente recompilados (mudança só em `.cpp` não mostra o efeito da
+  mudança no header/gerado: sempre conferir o horário do binário e a saída de uma sonda antes de concluir); suposição errada
+  de que o dump do PCSX2 era 1 quadro (eram 4 vsyncs); apaguei sem querer arquivos em `/tmp` de novo (usar `~/gow2/logs`).
