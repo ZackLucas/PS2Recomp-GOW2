@@ -192,3 +192,19 @@ hardware**:
   As palavras `PDIVW`/`PDIVUW`/`PMFHL.UW` que a contagem do ELF acha estão em dados, fora das funções.
 * **Atenção:** `ps2xRuntime/src/runner/*` é gerado e fora do git; depois de mexer nos tradutores, regerar com `ps2_recomp`
   num diretório separado e comparar com o runner atual (`diff -r`) antes de copiar.
+
+## A24. Rosto do Kratos ausente no menu (aberto, 2026-10-20) — **prioridade máxima**
+* **Medido (`PS2_GS_FRAMESUM=400`, mesmo formato do `gsdump.py draws`):** as 3 camadas do rosto (T8 512x512 `tfx=3`,
+  tbp 14240/15264/15296) chegam ao GS com o mesmo número de vértices do PCSX2 (1.824 / 2.572 / ~2.400), mas **100% com ADC=1**.
+  Outros modelos também saem em boa parte descartados (ex.: tbp 13872: 2.018 desenhados, 6.098 descartados) = artefatos/piscada.
+* **Causa imediata:** o VU1 recebe as matrizes dos ossos (VU1 603..650, base ITOP=587) **zeradas** (PCSX2: 12 matrizes), logo
+  `w=0`, `Q=FLT_MAX`, tudo recortado. O `UNPACK V4-32` de 48 qwords existe; os dados de origem na RAM do EE já são zero
+  (`0x566f20`, `0x567460`, `0x5676a0`, `0x505720..0x505ea0`). `PS2_WATCH` nesses endereços: **nenhuma** escrita do EE.
+* **Achado:** o jogo usa DMA scratchpad->RAM (canal 8) em **modo cadeia de destino**, que o runtime ignorava. Implementado
+  (`processScratchpadDestChain`). Efeito parcial: camada tbp 15296 0 -> 141 prims desenhados; as outras duas ainda 0.
+* **Descartado com medição:** tradução COP2 (erros reais em `VCLIP`, `VRSQRT`, `VLQI`..., mas o GoW2 não os usa de forma que
+  importe: 437 `VRSQRT` todos com fs=vf0.w=1); bit SPR em tags de DMA da VIF1 (0 ocorrências); `UNPACK` truncado (0).
+* **Próximo:** conferir se os buffers agora recebem dados (repetir `PS2_DMA_VIFCODE=6c30025b`); ver a ordem/tempo do canal 8
+  (o DMA roda instantâneo na escrita do CHCR; o EE pode esperar o fim por `D_STAT`/interrupção) e o canal 9 (toSPR) em cadeia.
+* Sondas novas (todas por variável de ambiente): `PS2_GS_FRAMESUM=N`, `PS2_VU1_CAPTURE_TBP=<tbp>` (+`PS2_VU1_CAPTURE`),
+  `PS2_VIF_RANGE=lo-hi`, `PS2_DMA_VIFCODE=<hex>`. Ferramentas offline: `gow2_vu1_run_one` sobre `in_<hash>_pc*_tbp*.bin`.

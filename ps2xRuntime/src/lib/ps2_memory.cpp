@@ -1532,6 +1532,27 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             break;
                         }
 
+                        {
+                            // PS2_DMA_VIFCODE=<hex>: log chain tags whose embedded VIFcode (TTE) matches, with the data source.
+                            static const uint32_t wantCode = std::getenv("PS2_DMA_VIFCODE") ? std::strtoul(std::getenv("PS2_DMA_VIFCODE"), nullptr, 16) : 0u;
+                            static uint32_t codeLogN = 0;
+                            if (wantCode && transferTagData && codeLogN < 40)
+                            {
+                                const uint32_t c0 = loadScalar<uint32_t>(tp, 8, 16, "dma tag vifcode", tagAddr);
+                                const uint32_t c1 = loadScalar<uint32_t>(tp, 12, 16, "dma tag vifcode", tagAddr);
+                                if (c0 == wantCode || c1 == wantCode)
+                                {
+                                    ++codeLogN;
+                                    uint32_t w[4] = {};
+                                    const bool ds = isScratchpad(dataAddr);
+                                    const uint32_t dp = translateAddress(dataAddr);
+                                    if (dp + 16 <= (ds ? PS2_SCRATCHPAD_SIZE : PS2_RAM_SIZE))
+                                        std::memcpy(w, (ds ? m_scratchpad : m_rdram) + dp, 16);
+                                    std::fprintf(stderr, "[dmacode] tag@%08x id=%u qwc=%u data@%08x codes=%08x %08x first: %08x %08x %08x %08x\n",
+                                                 currentTagAddr, id, tagQwc, dataAddr, c0, c1, w[0], w[1], w[2], w[3]);
+                                }
+                            }
+                        }
                         if (transferTagData)
                             appendVifTagData(currentTagAddr);
 
@@ -1614,6 +1635,8 @@ bool PS2Memory::tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr)
         return false;
 
     const uint32_t mode = (chcr >> 2u) & 0x3u;
+    if (mode == 1u && channelBase == kSprFromChannel)
+        return processScratchpadDestChain(channelBase, chcr);
     if (mode != 0u)
         return false;
 
@@ -1662,6 +1685,70 @@ bool PS2Memory::tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr)
     m_ioRegisters[channelBase + 0x20u] = 0u;
     m_ioRegisters[channelBase + 0x80u] = (originalSadr + byteCount) & 0x3FF0u;
     completeDmacChannel(channelBase, fromScratchpad ? 8u : 9u);
+    return true;
+}
+
+// fromSPR (channel 8) in chain mode is a destination chain: the DMAtags are read from scratchpad at SADR, each one
+// giving QWC and the main-memory destination ADDR of the qwords that follow it (CNTS=0, CNT=1, END=7).
+bool PS2Memory::processScratchpadDestChain(uint32_t channelBase, uint32_t chcr)
+{
+    uint32_t sadr = m_ioRegisters[channelBase + 0x80u] & 0x3FF0u;
+    uint32_t madr = m_ioRegisters[channelBase + 0x10u] & 0x7FFFFFF0u;
+    uint32_t qwc = m_ioRegisters[channelBase + 0x20u] & 0xFFFFu;
+    const bool tie = (chcr & (1u << 7)) != 0u;
+    uint32_t lastTagUpper = (chcr >> 16) & 0xFFFFu;
+
+    auto copyOut = [&](uint32_t count) -> bool
+    {
+        uint32_t mainOffset = 0u;
+        try
+        {
+            mainOffset = translateAddress(madr);
+        }
+        catch (const std::exception &)
+        {
+            return false;
+        }
+        const uint32_t bytes = count * 16u;
+        if (mainOffset > PS2_RAM_SIZE || bytes > PS2_RAM_SIZE - mainOffset)
+            return false;
+        for (uint32_t done = 0u; done < bytes;)
+        {
+            const uint32_t chunk = std::min(bytes - done, PS2_SCRATCHPAD_SIZE - sadr);
+            std::memcpy(m_rdram + mainOffset + done, m_scratchpad + sadr, chunk);
+            markModified(mainOffset + done, chunk);
+            done += chunk;
+            sadr = (sadr + chunk) & (PS2_SCRATCHPAD_SIZE - 1u);
+        }
+        madr += bytes;
+        return true;
+    };
+
+    // A transfer already set up in MADR/QWC goes first, then the tags.
+    if (qwc != 0u && !copyOut(qwc))
+        return false;
+
+    for (int tags = 0; tags < 4096; ++tags)
+    {
+        uint64_t tag = 0;
+        std::memcpy(&tag, m_scratchpad + sadr, sizeof(tag));
+        sadr = (sadr + 16u) & (PS2_SCRATCHPAD_SIZE - 1u);
+        const uint32_t tagQwc = static_cast<uint32_t>(tag & 0xFFFFu);
+        const uint32_t id = static_cast<uint32_t>((tag >> 28) & 0x7u);
+        const bool irq = ((tag >> 31) & 1ull) != 0ull;
+        lastTagUpper = static_cast<uint32_t>((tag >> 16) & 0xFFFFu);
+        madr = static_cast<uint32_t>((tag >> 32) & 0x7FFFFFF0u);
+        if (tagQwc != 0u && !copyOut(tagQwc))
+            break;
+        if (id == 7u || (irq && tie) || (id != 0u && id != 1u))
+            break;
+    }
+
+    m_ioRegisters[channelBase + 0x10u] = madr & 0x7FFFFFF0u;
+    m_ioRegisters[channelBase + 0x20u] = 0u;
+    m_ioRegisters[channelBase + 0x80u] = sadr & 0x3FF0u;
+    m_ioRegisters[channelBase + 0x00u] = (chcr & 0x0000FFFFu) | (lastTagUpper << 16);
+    completeDmacChannel(channelBase, 8u);
     return true;
 }
 

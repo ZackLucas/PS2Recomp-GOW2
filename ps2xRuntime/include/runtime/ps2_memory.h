@@ -450,6 +450,7 @@ public:
 
     std::array<EeTimer, 4> m_eeTimers{};
     bool tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr);
+    bool processScratchpadDestChain(uint32_t channelBase, uint32_t chcr);
     void completeDmacChannel(uint32_t channelBase, uint32_t cause);
     void queueCompletedDmacCause(uint32_t cause);
 };

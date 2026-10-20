@@ -89,6 +89,8 @@ namespace
     } g_ps2WatchInit;
 }
 
+extern std::atomic<uint32_t> g_gsTbpWatchHits;
+
 namespace
 {
     // PS2_VU1_CAPTURE=<dir>: save every distinct VU1 micro-memory image seen at MSCAL and count calls per
@@ -864,12 +866,51 @@ bool PS2Runtime::syncCoreSubsystems()
                                      }
                                      vu1CaptureProgram(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, startPC, top, itop, m_vu1.state(),
                                                        m_memory.getVU1Data(), PS2_VU1_DATA_SIZE);
+                                     // PS2_VU1_CAPTURE_TBP=<tbp> (+ PS2_VU1_CAPTURE dir): save the input of the calls whose output
+                                     // kicks vertices with that texture base (to find which call draws a missing model).
+                                     static const bool tbpCapture = std::getenv("PS2_VU1_CAPTURE_TBP") && std::getenv("PS2_VU1_CAPTURE");
+                                     static std::vector<uint8_t> tbpSnapData;
+                                     static VU1State tbpSnapState;
+                                     uint32_t tbpHitsBefore = 0;
+                                     if (tbpCapture)
+                                     {
+                                         tbpSnapData.assign(m_memory.getVU1Data(), m_memory.getVU1Data() + PS2_VU1_DATA_SIZE);
+                                         tbpSnapState = m_vu1.state();
+                                         tbpHitsBefore = g_gsTbpWatchHits.load();
+                                     }
                                      if (!m_vu1Native.tryRun(m_vu1, m_memory, m_gs, m_memory.getVU1Code(),
                                                              m_memory.getVU1CodeGeneration(), m_memory.getVU1Data(),
                                                              PS2_VU1_DATA_SIZE, startPC, top, itop))
                                          m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                        m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                        m_gs, &m_memory, startPC, top, itop, 65536);
+                                     if (tbpCapture && g_gsTbpWatchHits.load() != tbpHitsBefore)
+                                     {
+                                         static uint32_t saved = 0;
+                                         static const uint64_t skip = std::getenv("PS2_VU1_CAPTURE_SKIP") ? std::strtoull(std::getenv("PS2_VU1_CAPTURE_SKIP"), nullptr, 10) : 0;
+                                         static uint64_t seenCalls = 0;
+                                         if (seenCalls++ >= skip && saved < 8)
+                                         {
+                                             uint64_t h = 1469598103934665603ull; // same image hash as vu1CaptureProgram
+                                             for (uint32_t i = 0; i < PS2_VU1_CODE_SIZE; ++i)
+                                                 h = (h ^ m_memory.getVU1Code()[i]) * 1099511628211ull;
+                                             char path[512];
+                                             std::snprintf(path, sizeof path, "%s/in_%016llx_pc%u_tbp%s_%u.bin", std::getenv("PS2_VU1_CAPTURE"),
+                                                           static_cast<unsigned long long>(h), startPC, std::getenv("PS2_VU1_CAPTURE_TBP"), saved);
+                                             if (FILE *f = std::fopen(path, "wb"))
+                                             {
+                                                 const uint32_t hdr[4] = {0x4E495556u, startPC, top, itop};
+                                                 const uint32_t sz = static_cast<uint32_t>(sizeof(VU1State));
+                                                 std::fwrite(hdr, 4, 4, f);
+                                                 std::fwrite(&sz, 4, 1, f);
+                                                 std::fwrite(&tbpSnapState, 1, sizeof(VU1State), f);
+                                                 std::fwrite(tbpSnapData.data(), 1, tbpSnapData.size(), f);
+                                                 std::fclose(f);
+                                             }
+                                             std::fprintf(stderr, "[vu1tbp] saved %s (kicks %u)\n", path, g_gsTbpWatchHits.load() - tbpHitsBefore);
+                                             ++saved;
+                                         }
+                                     }
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |

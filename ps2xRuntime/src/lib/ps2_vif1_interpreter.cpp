@@ -588,6 +588,24 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 vuAddr = (vuAddr + (vif1_regs.tops & 0x3FFu)) & 0x3FFu;
 
             const bool zeroExtend = (imm & 0x4000u) != 0u;
+            {
+                // PS2_VIF_RANGE=lo-hi: log UNPACKs whose destination starts inside [lo,hi] (VU1 qwords).
+                static uint32_t rlo = 1, rhi = 0;
+                static const bool rangeOn = [] {
+                    const char *e = std::getenv("PS2_VIF_RANGE");
+                    if (e) std::sscanf(e, "%u-%u", &rlo, &rhi);
+                    return e != nullptr;
+                }();
+                static uint32_t rangeN = 0;
+                if (rangeOn && vuAddr >= rlo && vuAddr <= rhi && rangeN++ < 60)
+                {
+                    uint32_t w[4] = {};
+                    if (pos + 16 <= sizeBytes) std::memcpy(w, data + pos, 16);
+                    std::fprintf(stderr, "[vifrange] cmd=%08x vn=%u vl=%u mask=%d num=%u vuAddr=%u flg=%d tops=%u cl=%u wl=%u mode=%u src0: %08x %08x %08x %08x\n",
+                                 cmd, vn, vl, (int)maskEnable, writeVectorCount, vuAddr, (imm & 0x8000u) ? 1 : 0, vif1_regs.tops & 0x3FFu,
+                                 cl, wl, vif1_regs.mode, w[0], w[1], w[2], w[3]);
+                }
+            }
 
             if (m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes)
             {

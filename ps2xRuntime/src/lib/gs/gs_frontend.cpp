@@ -14,6 +14,8 @@
 #include <sstream>
 #include <atomic>
 static std::atomic<uint32_t> g_gsPresentCount{0};
+// PS2_VU1_CAPTURE_TBP support: number of vertex kicks (drawn or ADC) whose context uses this TBP0.
+std::atomic<uint32_t> g_gsTbpWatchHits{0};
 
 namespace
 {
@@ -30,6 +32,12 @@ namespace
         }
     } g_gsLogDump;
     std::atomic<uint32_t> g_gsLogDraws{0}, g_gsLogTexSprites{0};
+    struct FrameSumEntry
+    {
+        uint32_t count = 0, culled = 0;
+        float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f, z0 = 1e30f, z1 = -1e30f;
+    };
+    std::map<std::string, FrameSumEntry> g_frameSum;
     static constexpr uint32_t kHostFrameWidth = 640u;
 
     GSPrimReg decodePrimRegister(uint64_t value)
@@ -594,7 +602,14 @@ void GS::latchHostPresentationFrame()
         }
     }
 
-    g_gsPresentCount.fetch_add(1);
+    if (g_gsPresentCount.fetch_add(1) + 1 == (std::getenv("PS2_GS_FRAMESUM") ? (uint32_t)std::atoi(std::getenv("PS2_GS_FRAMESUM")) + 1 : 0))
+    {
+        std::lock_guard<std::mutex> lk(g_gsLogMutex);
+        std::fprintf(stderr, "[framesum] present %u: %zu setups\n", g_gsPresentCount.load() - 1, g_frameSum.size());
+        for (const auto &kv : g_frameSum)
+            std::fprintf(stderr, "[framesum] %6u adc=%-6u %s  x=[%.1f,%.1f] y=[%.1f,%.1f] z=[%.0f,%.0f]\n", kv.second.count, kv.second.culled, kv.first.c_str(),
+                         kv.second.x0, kv.second.x1, kv.second.y0, kv.second.y1, kv.second.z0, kv.second.z1);
+    }
     const bool hasFrame = static_cast<bool>(frame);
     const uint32_t displayFbp = frame.displayFbp;
     const uint32_t sourceFbp = frame.sourceFbp;
@@ -1637,11 +1652,55 @@ void GS::vertexKick(bool drawing)
     if (m_vtxCount < needed)
         return;
 
+    // PS2_GS_FRAMESUM=N: per-setup primitive count (drawn and ADC-suppressed) and bounding box for the frame after
+    // the N-th present (same fields as games/gow2/scripts/gsdump.py draws, to diff against a PCSX2 dump).
+    auto frameSumRecord = [&](bool drawn, const GSPrimitiveBatch *batch) {
+        static const uint32_t frameSumAt = std::getenv("PS2_GS_FRAMESUM") ? std::atoi(std::getenv("PS2_GS_FRAMESUM")) : 0;
+        if (!frameSumAt || g_gsPresentCount.load() != frameSumAt)
+            return;
+        const GSContext &c = m_ctx[m_prim.ctxt ? 1 : 0];
+        char key[256];
+        int n = std::snprintf(key, sizeof key, "%d ctx%d fbp=%u fbw=%u fpsm=%u", (int)m_prim.type, m_prim.ctxt ? 2 : 1, c.frame.fbp,
+                              c.frame.fbw, (unsigned)c.frame.psm);
+        if (m_prim.tme)
+            n += std::snprintf(key + n, sizeof key - n, " tbp=%u tbw=%u tpsm=%u tw=%u th=%u tfx=%u", c.tex0.tbp0, (unsigned)c.tex0.tbw,
+                               (unsigned)c.tex0.psm, 1u << c.tex0.tw, 1u << c.tex0.th, (unsigned)c.tex0.tfx);
+        else
+            n += std::snprintf(key + n, sizeof key - n, " notex");
+        if (m_prim.abe)
+            n += std::snprintf(key + n, sizeof key - n, " abe=%u%u%u%u fix=%#x", (unsigned)(c.alpha & 3), (unsigned)((c.alpha >> 2) & 3),
+                               (unsigned)((c.alpha >> 4) & 3), (unsigned)((c.alpha >> 6) & 3), (unsigned)((c.alpha >> 32) & 0xff));
+        std::snprintf(key + n, sizeof key - n, "%s%s", (c.test & 1) ? " ATE" : "", ((c.test >> 16) & 1) ? " ZTE" : "");
+        std::lock_guard<std::mutex> lk(g_gsLogMutex);
+        FrameSumEntry &e = g_frameSum[key];
+        if (!drawn)
+        {
+            ++e.culled;
+            return;
+        }
+        ++e.count;
+        for (int i = 0; batch && i < batch->vertexCount; ++i)
+        {
+            const GSVertex &v = batch->vertices[i];
+            e.x0 = std::min(e.x0, v.x); e.x1 = std::max(e.x1, v.x);
+            e.y0 = std::min(e.y0, v.y); e.y1 = std::max(e.y1, v.y);
+            e.z0 = std::min(e.z0, (float)v.z); e.z1 = std::max(e.z1, (float)v.z);
+        }
+    };
+    if (!drawing)
+        frameSumRecord(false, nullptr);
+    {
+        static const long watchTbp = std::getenv("PS2_VU1_CAPTURE_TBP") ? std::strtol(std::getenv("PS2_VU1_CAPTURE_TBP"), nullptr, 0) : -1;
+        if (watchTbp >= 0 && m_prim.tme && m_ctx[m_prim.ctxt ? 1 : 0].tex0.tbp0 == (uint32_t)watchTbp)
+            g_gsTbpWatchHits.fetch_add(1, std::memory_order_relaxed);
+    }
+
     if (drawing && m_backend)
     {
         GSPrimitiveBatch batch = buildDrawBatch(needed);
         updatePreferredDisplaySourceForDraw(batch);
         m_backend->Submit(batch);
+        frameSumRecord(true, &batch);
         static const bool logGsD = std::getenv("PS2_GS_LOG") != nullptr;
         if (logGsD)
         {
