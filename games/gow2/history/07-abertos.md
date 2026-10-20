@@ -208,3 +208,17 @@ hardware**:
   (o DMA roda instantâneo na escrita do CHCR; o EE pode esperar o fim por `D_STAT`/interrupção) e o canal 9 (toSPR) em cadeia.
 * Sondas novas (todas por variável de ambiente): `PS2_GS_FRAMESUM=N`, `PS2_VU1_CAPTURE_TBP=<tbp>` (+`PS2_VU1_CAPTURE`),
   `PS2_VIF_RANGE=lo-hi`, `PS2_DMA_VIFCODE=<hex>`. Ferramentas offline: `gow2_vu1_run_one` sobre `in_<hash>_pc*_tbp*.bin`.
+
+### A24, atualização (2026-10-20, tarde)
+* **Oráculo PCSX2 sobre uma chamada real do rosto** (`in_6c75..._pc48_tbp14240_0`, capturada com `PS2_VU1_CAPTURE_TBP=14240`):
+  saída **idêntica byte a byte** à nossa (165 qwords). **O VU1 está inocentado: a entrada é que está errada.**
+* Depois do `fromSPR` em cadeia, os dados de origem dos buffers de matrizes (`PS2_DMA_VIFCODE=6c30025b`) passaram de zero
+  para valores plausíveis (escala 0,1). Mesmo assim o rosto continua com ADC=1: na chamada capturada os vértices têm `Q<0`
+  (w negativo = atrás da câmera), então o recorte (`CLIP`) descarta tudo.
+* Há duas bases de ITOP (587 e 246) e três TOPs (0/341/683) alternando; os MSCAL seguem em grupos de pc 0/24/48 e as
+  matrizes (VU1 603..650) são enviadas uma vez e reaproveitadas por muitos MSCAL.
+* **Pista para o próximo passo:** comparar, no mesmo ponto, a matriz final que o VU1 usa (vi11+16..19) com a do PCSX2; as
+  nossas (escala ~2, translação ~-58,-570,-210) diferem das do savestate do PCSX2 (escala ~0,1 por osso). Procurar quem as
+  produz (uma chamada anterior do VU1 em pc 0/24 grava essa área, ou o EE/VU0 monta a matriz do objeto).
+* Scripts novos: `scripts/vu1_in_dump.py` (qwords da memória de uma chamada capturada ou de `vu1Memory.bin --raw`) e
+  `scripts/gif_verts.py` (decodifica pacotes GIF). Sondas: `PS2_VIF_RANGE` agora imprime os MSCAL (`PS2_VIF_RANGE_MAX=N`).

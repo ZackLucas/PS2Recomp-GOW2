@@ -433,6 +433,8 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 vif1_regs.tops = (vif1_regs.base + vif1_regs.ofst) & 0x3FFu;
             vif1_regs.stat ^= (1u << 7); // toggle DBF
 
+            if (std::getenv("PS2_VIF_RANGE"))
+                std::fprintf(stderr, "[vifrange] --- MSCAL pc=%u top=%u itop=%u\n", startPC, runTop, runItop);
             if (m_vu1MscalCallback)
                 m_vu1MscalCallback(startPC, runTop, runItop);
             continue;
@@ -597,7 +599,8 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                     return e != nullptr;
                 }();
                 static uint32_t rangeN = 0;
-                if (rangeOn && vuAddr >= rlo && vuAddr <= rhi && rangeN++ < 60)
+                static const uint32_t rangeMax = std::getenv("PS2_VIF_RANGE_MAX") ? std::atoi(std::getenv("PS2_VIF_RANGE_MAX")) : 60;
+                if (rangeOn && vuAddr >= rlo && vuAddr <= rhi && rangeN++ < rangeMax)
                 {
                     uint32_t w[4] = {};
                     if (pos + 16 <= sizeBytes) std::memcpy(w, data + pos, 16);
