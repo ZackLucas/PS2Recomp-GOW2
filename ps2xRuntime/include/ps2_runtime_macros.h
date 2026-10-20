@@ -540,8 +540,9 @@ inline __m128i ps2_ppacb(__m128i rs, __m128i rt)
 #define PS2_PPACB(a, b) ps2_ppacb((__m128i)(a), (__m128i)(b))
 
 // Packed Interleave (PINT)
-#define PS2_PINTH(a, b) _mm_unpacklo_epi16(_mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)))
-#define PS2_PINTEH(a, b) _mm_unpackhi_epi16(_mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)))
+// PINTH: {rt.h0, rs.h4, rt.h1, rs.h5, ...}   PINTEH: {rt.h0, rs.h0, rt.h2, rs.h2, ...}   (a = rs, b = rt)
+#define PS2_PINTH(a, b) _mm_unpacklo_epi16((__m128i)(b), _mm_srli_si128((__m128i)(a), 8))
+#define PS2_PINTEH(a, b) _mm_or_si128(_mm_and_si128((__m128i)(b), _mm_set1_epi32(0xFFFF)), _mm_slli_epi32((__m128i)(a), 16))
 
 // Packed Multiply-Add (PMADD)
 #define PS2_PMADDW(a, b) _mm_add_epi32(_mm_mullo_epi32(_mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(1, 0, 3, 2)), _mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(1, 0, 3, 2))), _mm_mullo_epi32(_mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0))))
@@ -806,5 +807,196 @@ static inline void Ps2SetGprLow64(R5900Context *ctx, int reg, __m128i new_low)
         if (reg_idx != 0)                  \
             ctx_ptr->r[reg_idx] = (val);   \
     } while (0)
+
+// R5900 MMI ops that use the full 128-bit HI/LO, two 64-bit lanes, or need scalar edge cases.
+// LO/HI bits 0-63 are ctx->lo / ctx->hi, bits 64-127 ctx->lo1 / ctx->hi1. Lane k of a word op uses words 2k.
+// Verified against the EE Core Instruction Set Manual by games/gow2/tools/mmi_audit (real decoder + code generator).
+union Ps2MmiV
+{
+    uint32_t w[4];
+    int32_t sw[4];
+    uint16_t h[8];
+    int16_t sh[8];
+    uint64_t d[2];
+    int64_t sd[2];
+    __m128i v;
+};
+
+static inline Ps2MmiV Ps2MmiGet(R5900Context *ctx, int reg)
+{
+    Ps2MmiV x;
+    x.v = GPR_VEC(ctx, reg);
+    return x;
+}
+static inline Ps2MmiV Ps2MmiLo(R5900Context *ctx) { Ps2MmiV x; x.d[0] = ctx->lo; x.d[1] = ctx->lo1; return x; }
+static inline Ps2MmiV Ps2MmiHi(R5900Context *ctx) { Ps2MmiV x; x.d[0] = ctx->hi; x.d[1] = ctx->hi1; return x; }
+static inline void Ps2MmiSetLo(R5900Context *ctx, const Ps2MmiV &x) { ctx->lo = x.d[0]; ctx->lo1 = x.d[1]; }
+static inline void Ps2MmiSetHi(R5900Context *ctx, const Ps2MmiV &x) { ctx->hi = x.d[0]; ctx->hi1 = x.d[1]; }
+static inline uint64_t Ps2MmiSx32(uint32_t v) { return (uint64_t)(int64_t)(int32_t)v; }
+
+// kind: 0 = PMADDW/PMADDUW, 1 = PMSUBW, 2 = PMULTW/PMULTUW
+static inline void ps2_mmi_word_mac(R5900Context *ctx, int rd, int rs, int rt, int kind, bool isUnsigned)
+{
+    Ps2MmiV a = Ps2MmiGet(ctx, rs), b = Ps2MmiGet(ctx, rt), lo = Ps2MmiLo(ctx), hi = Ps2MmiHi(ctx), out;
+    for (int l = 0; l < 2; ++l)
+    {
+        const uint64_t p = isUnsigned ? (uint64_t)a.w[2 * l] * b.w[2 * l]
+                                      : (uint64_t)((int64_t)a.sw[2 * l] * (int64_t)b.sw[2 * l]);
+        const uint64_t acc = ((uint64_t)hi.w[2 * l] << 32) | lo.w[2 * l];
+        const uint64_t r = kind == 2 ? p : kind == 0 ? acc + p : acc - p;
+        lo.d[l] = Ps2MmiSx32((uint32_t)r);
+        hi.d[l] = Ps2MmiSx32((uint32_t)(r >> 32));
+        out.d[l] = r;
+    }
+    Ps2MmiSetLo(ctx, lo);
+    Ps2MmiSetHi(ctx, hi);
+    SET_GPR_VEC(ctx, rd, out.v);
+}
+
+// PDIVW / PDIVUW: lanes 0 and 2, LO = quotient, HI = remainder (sign-extended). x/0 -> LO=(x<0)?1:-1, HI=x.
+static inline void ps2_mmi_pdivw(R5900Context *ctx, int rs, int rt, bool isUnsigned)
+{
+    Ps2MmiV a = Ps2MmiGet(ctx, rs), b = Ps2MmiGet(ctx, rt), lo = Ps2MmiLo(ctx), hi = Ps2MmiHi(ctx);
+    for (int l = 0; l < 2; ++l)
+    {
+        uint32_t q, r;
+        if (isUnsigned)
+        {
+            const uint32_t n = a.w[2 * l], d = b.w[2 * l];
+            q = d ? n / d : 0xFFFFFFFFu;
+            r = d ? n % d : n;
+        }
+        else
+        {
+            const int32_t n = a.sw[2 * l], d = b.sw[2 * l];
+            if (d == 0) { q = n < 0 ? 1u : 0xFFFFFFFFu; r = (uint32_t)n; }
+            else if (n == INT32_MIN && d == -1) { q = (uint32_t)INT32_MIN; r = 0; }
+            else { q = (uint32_t)(n / d); r = (uint32_t)(n % d); }
+        }
+        lo.d[l] = Ps2MmiSx32(q);
+        hi.d[l] = Ps2MmiSx32(r);
+    }
+    Ps2MmiSetLo(ctx, lo);
+    Ps2MmiSetHi(ctx, hi);
+}
+
+// PDIVBW: the four words of rs divided by halfword 0 of rt; LO = quotients, HI = remainders.
+static inline void ps2_mmi_pdivbw(R5900Context *ctx, int rs, int rt)
+{
+    Ps2MmiV a = Ps2MmiGet(ctx, rs), lo, hi;
+    const int32_t d = Ps2MmiGet(ctx, rt).sh[0];
+    for (int i = 0; i < 4; ++i)
+    {
+        const int32_t n = a.sw[i];
+        if (d == 0) { lo.w[i] = n < 0 ? 1u : 0xFFFFFFFFu; hi.w[i] = (uint32_t)n; }
+        else if (n == INT32_MIN && d == -1) { lo.w[i] = (uint32_t)INT32_MIN; hi.w[i] = 0; }
+        else { lo.w[i] = (uint32_t)(n / d); hi.w[i] = (uint32_t)(int32_t)(int16_t)(n % d); }
+    }
+    Ps2MmiSetLo(ctx, lo);
+    Ps2MmiSetHi(ctx, hi);
+}
+
+// Halfword product k (0..7) lives in LO.w0, LO.w1, HI.w0, HI.w1, LO.w2, LO.w3, HI.w2, HI.w3.
+// kind: 0 = PMADDH, 1 = PMSUBH, 2 = PMULTH. rd = {LO.w0, HI.w0, LO.w2, HI.w2}.
+static inline void ps2_mmi_half_mac(R5900Context *ctx, int rd, int rs, int rt, int kind)
+{
+    Ps2MmiV a = Ps2MmiGet(ctx, rs), b = Ps2MmiGet(ctx, rt), lo = Ps2MmiLo(ctx), hi = Ps2MmiHi(ctx), out;
+    for (int k = 0; k < 8; ++k)
+    {
+        const uint32_t p = (uint32_t)((int32_t)a.sh[k] * (int32_t)b.sh[k]);
+        Ps2MmiV &dst = ((k >> 1) & 1) ? hi : lo;
+        const int wi = (k & 1) + ((k >> 2) << 1);
+        dst.w[wi] = kind == 2 ? p : kind == 0 ? dst.w[wi] + p : dst.w[wi] - p;
+    }
+    Ps2MmiSetLo(ctx, lo);
+    Ps2MmiSetHi(ctx, hi);
+    out.w[0] = lo.w[0]; out.w[1] = hi.w[0]; out.w[2] = lo.w[2]; out.w[3] = hi.w[2];
+    SET_GPR_VEC(ctx, rd, out.v);
+}
+
+// PHMADH / PHMSBH: LO.w0 = h1*h1 +/- h0*h0, HI.w0 = h3/h2, LO.w2 = h5/h4, HI.w2 = h7/h6.
+// The odd words are undefined in the manual; like PCSX2 they get the odd product (PHMSBH: its complement).
+static inline void ps2_mmi_horiz_mac(R5900Context *ctx, int rd, int rs, int rt, bool isSub)
+{
+    Ps2MmiV a = Ps2MmiGet(ctx, rs), b = Ps2MmiGet(ctx, rt), lo, hi, out;
+    for (int p = 0; p < 4; ++p)
+    {
+        const uint32_t odd = (uint32_t)((int32_t)a.sh[2 * p + 1] * (int32_t)b.sh[2 * p + 1]);
+        const uint32_t even = (uint32_t)((int32_t)a.sh[2 * p] * (int32_t)b.sh[2 * p]);
+        Ps2MmiV &dst = (p & 1) ? hi : lo;
+        dst.w[(p >> 1) * 2] = isSub ? odd - even : odd + even;
+        dst.w[(p >> 1) * 2 + 1] = isSub ? ~odd : odd;
+    }
+    Ps2MmiSetLo(ctx, lo);
+    Ps2MmiSetHi(ctx, hi);
+    out.w[0] = lo.w[0]; out.w[1] = hi.w[0]; out.w[2] = lo.w[2]; out.w[3] = hi.w[2];
+    SET_GPR_VEC(ctx, rd, out.v);
+}
+
+// PSLLVW / PSRLVW / PSRAVW: rd.dk = sign-extend(rt.w(2k) shifted by rs.w(2k) & 31). kind: 0 sll, 1 srl, 2 sra.
+static inline void ps2_mmi_shift_var(R5900Context *ctx, int rd, int rs, int rt, int kind)
+{
+    Ps2MmiV a = Ps2MmiGet(ctx, rs), b = Ps2MmiGet(ctx, rt), out;
+    for (int l = 0; l < 2; ++l)
+    {
+        const uint32_t s = a.w[2 * l] & 31, x = b.w[2 * l];
+        const uint32_t r = kind == 0 ? x << s : kind == 1 ? x >> s : (uint32_t)((int32_t)x >> s);
+        out.d[l] = Ps2MmiSx32(r);
+    }
+    SET_GPR_VEC(ctx, rd, out.v);
+}
+
+// PMFHL: sa 0 = LW, 1 = UW, 2 = SLW, 3 = LH, 4 = SH.
+static inline void ps2_mmi_pmfhl(R5900Context *ctx, int rd, int fmt)
+{
+    const Ps2MmiV lo = Ps2MmiLo(ctx), hi = Ps2MmiHi(ctx);
+    Ps2MmiV out;
+    auto sat16 = [](int32_t v) -> int16_t { return v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v; };
+    for (int l = 0; l < 2; ++l)
+    {
+        switch (fmt)
+        {
+        case 0: out.w[2 * l] = lo.w[2 * l]; out.w[2 * l + 1] = hi.w[2 * l]; break;
+        case 1: out.w[2 * l] = lo.w[2 * l + 1]; out.w[2 * l + 1] = hi.w[2 * l + 1]; break;
+        case 2:
+        {
+            const int64_t v = (int64_t)(((uint64_t)hi.w[2 * l] << 32) | lo.w[2 * l]);
+            const int32_t s = v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
+            out.d[l] = Ps2MmiSx32((uint32_t)s);
+            break;
+        }
+        case 3:
+            out.h[4 * l] = lo.h[4 * l]; out.h[4 * l + 1] = lo.h[4 * l + 2];
+            out.h[4 * l + 2] = hi.h[4 * l]; out.h[4 * l + 3] = hi.h[4 * l + 2];
+            break;
+        default:
+            out.sh[4 * l] = sat16(lo.sw[2 * l]); out.sh[4 * l + 1] = sat16(lo.sw[2 * l + 1]);
+            out.sh[4 * l + 2] = sat16(hi.sw[2 * l]); out.sh[4 * l + 3] = sat16(hi.sw[2 * l + 1]);
+            break;
+        }
+    }
+    SET_GPR_VEC(ctx, rd, out.v);
+}
+
+// PMTHL.LW: LO.w0 = rs.w0, HI.w0 = rs.w1, LO.w2 = rs.w2, HI.w2 = rs.w3 (odd words of LO/HI kept).
+static inline void ps2_mmi_pmthl_lw(R5900Context *ctx, int rs)
+{
+    const Ps2MmiV a = Ps2MmiGet(ctx, rs);
+    Ps2MmiV lo = Ps2MmiLo(ctx), hi = Ps2MmiHi(ctx);
+    lo.w[0] = a.w[0]; hi.w[0] = a.w[1]; lo.w[2] = a.w[2]; hi.w[2] = a.w[3];
+    Ps2MmiSetLo(ctx, lo);
+    Ps2MmiSetHi(ctx, hi);
+}
+
+// PABSW / PABSH: |x| with the most negative value saturating to the largest positive one.
+static inline __m128i ps2_mmi_pabsw(__m128i x)
+{
+    const __m128i a = _mm_abs_epi32(x);
+    return _mm_xor_si128(a, _mm_cmpeq_epi32(a, _mm_set1_epi32(INT32_MIN))); // 0x80000000 -> 0x7FFFFFFF
+}
+static inline __m128i ps2_mmi_pabsh(__m128i x)
+{
+    return _mm_subs_epi16(_mm_setzero_si128(), _mm_min_epi16(x, _mm_sub_epi16(_mm_setzero_si128(), x))); // -min(x,-x), saturated
+}
 
 #endif // PS2_RUNTIME_MACROS_H
