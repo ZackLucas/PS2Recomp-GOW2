@@ -1699,7 +1699,33 @@ void GS::vertexKick(bool drawing)
     {
         GSPrimitiveBatch batch = buildDrawBatch(needed);
         updatePreferredDisplaySourceForDraw(batch);
-        m_backend->Submit(batch);
+        // PS2_GS_ONLY="tbp[:tfx],..." desenha só os lotes das texturas listadas (isola camadas); "none" = sem textura
+        static const char *onlyEnv = std::getenv("PS2_GS_ONLY");
+        bool skipBatch = false;
+        if (onlyEnv && m_prim.type != GS_PRIM_SPRITE)
+        {
+            const GSContext &oc = m_ctx[m_prim.ctxt ? 1 : 0];
+            skipBatch = true;
+            std::string list(onlyEnv);
+            size_t pos = 0;
+            while (pos <= list.size())
+            {
+                size_t e = list.find(',', pos);
+                if (e == std::string::npos) e = list.size();
+                std::string tok = list.substr(pos, e - pos);
+                pos = e + 1;
+                if (tok.empty()) continue;
+                if (tok == "none") { if (!m_prim.tme) skipBatch = false; continue; }
+                if (!m_prim.tme) continue;
+                char *end = nullptr;
+                long t = std::strtol(tok.c_str(), &end, 0);
+                if ((uint32_t)t != oc.tex0.tbp0) continue;
+                if (end && *end == ':' && (uint32_t)std::strtol(end + 1, nullptr, 0) != oc.tex0.tfx) continue;
+                skipBatch = false;
+            }
+        }
+        if (!skipBatch)
+            m_backend->Submit(batch);
         frameSumRecord(true, &batch);
         static const bool logGsD = std::getenv("PS2_GS_LOG") != nullptr;
         if (logGsD)
