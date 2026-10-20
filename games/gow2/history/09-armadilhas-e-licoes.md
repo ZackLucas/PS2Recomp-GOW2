@@ -100,3 +100,15 @@
 * **Binário desatualizado engana:** depois de mudar header, código gerado e `.cpp`, conferir o horário do binário e rodar
   uma sonda barata (ex.: `PS2_EE_DUMP`) antes de tirar conclusão de uma imagem. Não confundir "ainda igual" com "não funcionou".
 * Valor da observação do usuário: o painel preto torto era pista de que o defeito era geométrico/global (a matriz), não do fundo.
+
+## Testar o tradutor pelo caminho real, contra a definição, e não confiar em "já funciona" (2026-10-20)
+* Depois de achar 6 shuffles MMI errados, a auditoria do resto achou mais 34 instruções erradas e 1 que derrubava o processo.
+  Quase todas compilavam e "pareciam" vetoriais corretas; o erro estava na semântica (HI/LO de 128 bits, lanes 0 e 2,
+  operandos trocados, saturação).
+* O teste certo passa a **palavra da instrução** pelo decodificador e gerador reais e compila o C++ emitido. Testar só as
+  macros deixa de fora o registro errado (`PABSW` lia rs) e o que o tradutor escreve à mão. Uma cópia das macros
+  (`mmi_macros_extract.inc`) pode divergir do header.
+* Referência escalar escrita do manual, conferida com uma segunda fonte (interpretador do PCSX2) antes de declarar um
+  defeito. Dois falsos positivos meus apareceram assim: encodei `rd` em instruções que não têm `rd` (`PDIV*`).
+* Medir o impacto antes de comemorar: contar onde o jogo usa cada instrução (contagem no ELF tem dados misturados;
+  o `diff` do código regenerado é a medida real). Aqui o impacto no GoW2 foi pequeno (4 locais `PMULTH`).

@@ -1,6 +1,12 @@
 # God of War II (SCUS_974.81) — Progresso e próximos passos
 
 > **Estado atual (2026-10-20) — leia isto primeiro.**
+> * **Auditoria MMI completa (A23 resolvida, commit `f44eef7`).** `tools/mmi_audit/` passa cada instrução MMI pelo
+>   decodificador e gerador reais e compara com uma referência escalar do manual (rd, rs, rt, LO/HI de 128 bits).
+>   Antes **74 ok, 34 errados, 1 que derrubava o processo**; depois **109/109**; `ps2x_tests` 438/0. Erros: HI/LO tratados
+>   como 32/64 bits, lanes somadas, produtos truncados, operandos trocados, falta de saturação. **Impacto no GoW2: 4 locais
+>   `PMULTH`** (`sub_00116850`, `sub_00116BD8`, `sub_00117158`); menu igual, velocidade igual (8,4–9,0 vsync/s).
+>   Regerar: `ps2_recomp` com o toml apontando para `output_mmi/`, `diff -r` contra o runner, copiar só o que mudou.
 > * **Marco: o menu agora parece o do PCSX2** (pano vermelho, cortina, ombro do Kratos, painel preto sem a inclinação de
 >   "Star Wars"). Causa: **tradução errada de instruções MMI do R5900 no recompilador**. `PEXEW` trocava pares de palavras
 >   (1<->0, 3<->2) em vez das palavras 0<->2, e `PROT3W` rotacionava as 4 palavras em vez das 3 inferiores. A função do jogo

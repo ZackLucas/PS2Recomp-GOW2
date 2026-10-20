@@ -82,3 +82,10 @@ Para os commits anteriores, ver `git log` das branches `gow2` e `gow2-gpu-gs`.
 * Erros meus: levei algumas rodadas com binários parcialmente recompilados (mudança só em `.cpp` não mostra o efeito da
   mudança no header/gerado: sempre conferir o horário do binário e a saída de uma sonda antes de concluir); suposição errada
   de que o dump do PCSX2 era 1 quadro (eram 4 vsyncs); apaguei sem querer arquivos em `/tmp` de novo (usar `~/gow2/logs`).
+
+### 2026-10-20: auditoria completa das instruções MMI (A23 resolvida)
+* Ferramenta `tools/mmi_audit`: decodificador + gerador reais contra referência escalar do manual (conferida com o interpretador
+  do PCSX2). 74 ok / 34 errados / 1 que derrubava o processo -> 109/109. Suíte do projeto `ps2x_tests` 438/0.
+* No GoW2 só 4 locais `PMULTH` mudaram; menu igual e mesma velocidade. O ganho é eliminar uma classe inteira de defeitos
+  silenciosos antes que apareçam em gameplay (física, áudio, animação).
+

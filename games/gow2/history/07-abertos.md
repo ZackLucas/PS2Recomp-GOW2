@@ -177,14 +177,18 @@ hardware**:
   saturação inteira.
 
 
-## A23. Família MMI do R5900: auditar o resto contra a definição (aberta, 2026-10-20) — **prioridade alta**
+## A23. Família MMI do R5900: auditar o resto contra a definição (**resolvida**, 2026-10-20)
 * **O que aconteceu:** `PEXEW`, `PEXEH`, `PEXCH`, `PEXCW`, `PROT3W` e `PREVH` estavam traduzidos errado (shuffles com a ordem
-  dos índices trocada). `PROT3W` e `PEXEW` quebravam a projeção do menu (ver `PROGRESS.md`). Corrigido e coberto por
-  `games/gow2/tools/mmi_test.cpp`.
-* **Risco aberto:** o jogo usa MMI o tempo todo e o resto da família nunca foi conferido: `PADD*`, `PSUB*`, `PMAX*`,
-  `PMIN*`, `PCGT*`, `PCEQ*`, `PSLL*/PSRL*/PSRA*`, `PEXT*`, `PINT*`, `PPAC*`, `PMULT*/PMADD*`, `PDIV*`, `QFSRV`, `PLZCW`,
-  e as variantes com saturação. Qualquer um com a mesma classe de erro (ordem de índices, só 64 bits escritos,
-  extensão de sinal) pode estar produzindo outros defeitos silenciosos.
-* **Plano:** estender `mmi_test.cpp` com uma implementação escalar de referência por instrução (a partir da definição), aplicada
-  às macros/tradutores, com vetores aleatórios; priorizar as usadas pelo GoW2 (contar ocorrências no código gerado).
-* **Atenção:** `ps2xRuntime/src/runner/*` é gerado e fora do git; depois de mexer nos tradutores, regerar com `ps2_recomp`.
+  dos índices trocada). `PROT3W` e `PEXEW` quebravam a projeção do menu (ver `PROGRESS.md`).
+* **Auditoria completa:** `games/gow2/tools/mmi_audit/` passa cada palavra MMI pelo decodificador e gerador reais e compara o C++
+  emitido com uma referência escalar do manual (20.000 entradas por instrução; rd, rs, rt, LO e HI de 128 bits).
+  Antes: **74 ok, 34 errados, 1 derrubando o processo** (`PDIVBW`, `idiv` com INT_MIN/-1). Depois: **109/109**.
+  Classes de erro: HI/LO tratados como 32/64 bits (toda a família de multiplicação/divisão, `PMFHI/PMFLO/PMTHI/PMTLO`,
+  `PMFHL`, `PMTHL`); lanes somadas em vez de separadas (`PMULTW`, `PMULTH`...); produtos truncados em 16 bits (`PHMADH`);
+  operandos trocados (`PSLLVW`); registro errado (`PABSW` lia rs, não rt); falta de saturação (`PADDUH`, `PABS*`).
+  Commit `f44eef7` (genérico, para o upstream).
+* **Impacto no GoW2:** pequeno. No código das funções do jogo só 4 locais mudaram (`PMULTH` em `sub_00116850`,
+  `sub_00116BD8`, `sub_00117158`, matemática de ponto fixo empacotada). O menu e a velocidade (8,4-9,0 vsync/s) não mudaram.
+  As palavras `PDIVW`/`PDIVUW`/`PMFHL.UW` que a contagem do ELF acha estão em dados, fora das funções.
+* **Atenção:** `ps2xRuntime/src/runner/*` é gerado e fora do git; depois de mexer nos tradutores, regerar com `ps2_recomp`
+  num diretório separado e comparar com o runner atual (`diff -r`) antes de copiar.
