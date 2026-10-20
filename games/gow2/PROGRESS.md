@@ -25,6 +25,10 @@
 >   `PS2_GS_VRAMDUMP_AT`; `PS2_WATCH=lo-hi` (hex, RDRAM física) imprime cada escrita do EE com `ra` e `s0..s4`;
 >   `PS2_EE_DUMP=addr:bytes` (no 3000º MSCAL); `PS2_DMA_FIND`; `PS2_VU1_CAPTURE_SKIP`; `scripts/gif_adc_count.py`
 >   (vértices que desenham vs suprimidos por ADC); chave do log de texturas agora com `tfx`, `abe`, `alpha`.
+> * **Velocidade depois da correção (menu, VU1 nativo + GS GPU, regime):** **8,5–9,0 vsync/s** (antes 6,0, 1,0 = 1/60 do
+>   tempo real; +45%). Carga medida: ~1.050 chamadas de VU1 por vsync (~2.270 pacotes, ~2,2 MB, ~1,8 M ciclos de VU). As camadas
+>   T8 512x512 com `tfx=3` do rosto agora aparecem nos draws (antes 0). Os números de "triângulos por quadro" do PCSX2 que usei
+>   para localizar o defeito eram só sintoma (o total nosso quase não mudou, ~5.300); o que valeu foi a causa na matriz.
 > * Mesmo recorte do menu, para comparar as imagens: `~/gow2/frame_001800.png` (fora do git).
 > * Próximos passos: medir quadros/draws e velocidade com a projeção certa; comparar com o PCSX2 pixel a pixel (o rosto do
 >   Kratos aparece ou depende do instante da animação?); revisar o resto da família MMI (PMULT*, PADD*, PSUB*, PCGT*, PMAX*,
