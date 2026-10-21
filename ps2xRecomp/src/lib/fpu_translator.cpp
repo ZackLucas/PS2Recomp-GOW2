@@ -57,8 +57,8 @@ namespace ps2recomp
                                    "ctx->f[{}] = copysignf(INFINITY, ctx->f[{}] * 0.0f); }} "
                                    "else ctx->f[{}] = ctx->f[{}] / ctx->f[{}];",
                                    ft, fd, fs, fd, fs, ft);
-            case COP1_S_SQRT:
-                return fmt::format("ctx->f[{}] = FPU_SQRT_S(ctx->f[{}]);", fd, fs);
+            case COP1_S_SQRT: // R5900 SQRT.S fd, ft: the operand is ft (the fs field is 0)
+                return fmt::format("ctx->f[{}] = FPU_SQRT_S(ctx->f[{}]);", fd, ft);
             case COP1_S_ABS:
                 return fmt::format("ctx->f[{}] = FPU_ABS_S(ctx->f[{}]);", fd, fs);
             case COP1_S_MOV:
@@ -75,8 +75,8 @@ namespace ps2recomp
                 return fmt::format("{{ int32_t tmp = FPU_FLOOR_W_S(ctx->f[{}]); std::memcpy(&ctx->f[{}], &tmp, sizeof(tmp)); }}", fs, fd);
             case COP1_S_CVT_W:
                 return fmt::format("{{ int32_t tmp = FPU_CVT_W_S(ctx->f[{}]); std::memcpy(&ctx->f[{}], &tmp, sizeof(tmp)); }}", fs, fd);
-            case COP1_S_RSQRT:
-                return fmt::format("ctx->f[{}] = 1.0f / sqrtf(ctx->f[{}]);", fd, fs);
+            case COP1_S_RSQRT: // R5900 RSQRT.S fd, fs, ft: fs / sqrt(ft)
+                return fmt::format("ctx->f[{}] = FPU_RSQRT_S(ctx->f[{}], ctx->f[{}]);", fd, fs, ft);
             case COP1_S_ADDA:
                 return fmt::format("FPU_SET_ACC(ctx, FPU_ADD_S(ctx->f[{}], ctx->f[{}]));", fs, ft);
             case COP1_S_SUBA:

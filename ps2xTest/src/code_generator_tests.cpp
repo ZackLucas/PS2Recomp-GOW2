@@ -497,6 +497,45 @@ void register_code_generator_tests()
         }
     });
 
+    tc.Run("COP1 SQRT.S reads ft and RSQRT.S divides fs by sqrt(ft)", [](TestCase &t) {
+        // R5900: SQRT.S fd, ft takes the root of FPR[ft] (bits 16-20; the fs field is 0) and RSQRT.S fd, fs, ft
+        // computes FPR[fs] / sqrt(FPR[ft]) (PCSX2 FPU.cpp SQRT_S/RSQRT_S). The MIPS reading of SQRT.S (root of fs)
+        // took the root of $f0 in GoW2's acosf (sqrt.s $f1, $f1 at 0x18b378) and in 132 other places.
+        struct Case
+        {
+            const char *name;
+            uint32_t raw;
+            const char *expected;
+            const char *forbidden;
+        };
+        const uint32_t cop1s = (OPCODE_COP1 << 26) | (COP1_S << 21);
+        const Case cases[] = {
+            {"sqrt.s $f1, $f1", cop1s | (1u << 16) | (1u << 6) | COP1_S_SQRT, "ctx->f[1] = FPU_SQRT_S(ctx->f[1]);", "ctx->f[0]"},
+            {"rsqrt.s $f3, $f4, $f5", cop1s | (5u << 16) | (4u << 11) | (3u << 6) | COP1_S_RSQRT,
+             "ctx->f[3] = FPU_RSQRT_S(ctx->f[4], ctx->f[5]);", "sqrtf("},
+        };
+
+        for (const Case &c : cases)
+        {
+            Function func;
+            func.name = "cop1_root";
+            func.start = 0x3000;
+            func.end = 0x3008;
+            func.isRecompiled = true;
+            func.isStub = false;
+
+            R5900Decoder decoder;
+            std::vector<Instruction> instructions;
+            instructions.push_back(decoder.decodeInstruction(0x3000, c.raw));
+            instructions.push_back(makeNop(0x3004));
+
+            CodeGenerator gen({}, {});
+            const std::string generated = gen.generateFunction(func, instructions, false);
+            t.IsTrue(generated.find(c.expected) != std::string::npos, std::string(c.name) + " should emit " + c.expected);
+            t.IsTrue(generated.find(c.forbidden) == std::string::npos, std::string(c.name) + " must not use " + c.forbidden);
+        }
+    });
+
         tc.Run("emits labels and gotos for internal branches", [](TestCase &t) {
             Function func;
             func.name = "test_func";

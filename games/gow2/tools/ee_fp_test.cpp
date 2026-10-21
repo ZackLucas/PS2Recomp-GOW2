@@ -47,6 +47,19 @@ int main()
     expect("1.5+2.25", add(1.5f, 2.25f), bitsOf(3.75f));
     expect("rsqrt(4)=0.5", rsqrt(4.0f), bitsOf(0.5f));
     expect("rsqrt(0)=+Fmax", rsqrt(0.0f), 0x7F7FFFFFu);
+    // RSQRT.S fd, fs, ft = fs / sqrt(|ft|) (PCSX2 FPU.cpp RSQRT_S); ft zero -> +-Fmax with the sign of ft.
+    expect("RSQRT.S 2/sqrt(4)=1", rsqrt(2.0f, 4.0f), 0x3F800000u);
+    expect("RSQRT.S -3/sqrt(9)=-1", rsqrt(-3.0f, 9.0f), 0xBF800000u);
+    expect("RSQRT.S 1/sqrt(-4)=0.5 (abs)", rsqrt(1.0f, -4.0f), 0x3F000000u);
+    expect("RSQRT.S 3/sqrt(2): root rounded to float first", rsqrt(3.0f, 2.0f), 0x4007C3B7u);
+    expect("RSQRT.S -3/+0=+Fmax (sign of ft)", rsqrt(-3.0f, 0.0f), 0x7F7FFFFFu);
+    expect("RSQRT.S 3/-0=-Fmax (sign of ft)", rsqrt(3.0f, floatOf(0x80000000u)), 0xFF7FFFFFu);
+    expect("RSQRT.S 1/denormal=+Fmax", rsqrt(1.0f, den), 0x7F7FFFFFu);
+    expect("RSQRT.S 0/sqrt(4)=0", rsqrt(0.0f, 4.0f), 0u);
+    expect("RSQRT.S denormal/sqrt(4)=0", rsqrt(den, 4.0f), 0u);
+    expect("RSQRT.S overflow -> Fmax", rsqrt(fmax, floatOf(0x00800000u)), 0x7F7FFFFFu);
+    expect("RSQRT.S denormal result flushed", rsqrt(floatOf(0x00800000u), 4.0f), 0u);
+    expect("RSQRT.S NaN(neg) numerator -> -Fmax/2", rsqrt(nan, 4.0f), 0xFEFFFFFFu);
     alignas(16) float va[4] = {1.0f, inf, nan, den}, vb[4] = {2.0f, ninf, 1.0f, 3.0f}, vr[4];
     _mm_store_ps(vr, vmul(_mm_load_ps(va), _mm_load_ps(vb)));
     expect("vmul lane0 1*2", vr[0], bitsOf(2.0f));

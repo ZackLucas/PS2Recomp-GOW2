@@ -4,6 +4,8 @@
 //   * operands: denormal -> signed zero, Inf/NaN -> +-Fmax (largest finite float)
 //   * results:  Inf -> +-Fmax (overflow), denormal -> signed zero (underflow)
 //   * SQRT.S of a negative number uses its absolute value; DIV by zero gives +-Fmax (sign = xor of the signs)
+//   * RSQRT.S is fs / sqrt(|ft|); ft zero gives +-Fmax with the sign of ft (PCSX2's FPU.cpp; its x86 recompiler takes
+//     the sign of fs instead, which only differs when ft is +-0 and the signs differ)
 // Flags (FCR31 O/U/I/D and the sticky ones, VU0 MAC/status) are not tracked yet.
 // Rounding (compile-time PS2X_EE_FP_ROUND): 2 (default) rounds ADD/SUB/MUL and CVT.S.W toward zero and truncates
 // CVT.W.S, like PCSX2 with its default FPU.Roundmode = 3 (Chop); DIV and SQRT stay round-to-nearest (PCSX2's
@@ -155,13 +157,15 @@ namespace ps2x_fp
             return floatOf(ab & 0x80000000u);
         return std::sqrt(std::fabs(norm(a)));
     }
-    PS2X_FORCE_INLINE float rsqrt(float a)
+    // RSQRT.S: the root is rounded to float before the division, as in PCSX2 (sqrtss + divss).
+    PS2X_FORCE_INLINE float rsqrt(float s, float t)
     {
-        const uint32_t ab = bitsOf(a);
-        if (((ab >> 23) & 0xFFu) == 0u)
-            return floatOf((ab & 0x80000000u) | 0x7F7FFFFFu);
-        return norm(1.0f / std::sqrt(std::fabs(norm(a))));
+        const uint32_t tb = bitsOf(t);
+        if (((tb >> 23) & 0xFFu) == 0u)
+            return floatOf((tb & 0x80000000u) | 0x7F7FFFFFu);
+        return norm(norm(s) / std::sqrt(std::fabs(norm(t))));
     }
+    PS2X_FORCE_INLINE float rsqrt(float a) { return rsqrt(1.0f, a); }
 #if PS2X_EE_FP_ROUND == 0
     PS2X_FORCE_INLINE __m128 vadd(__m128 a, __m128 b) { return norm4(_mm_add_ps(norm4(a), norm4(b))); }
     PS2X_FORCE_INLINE __m128 vsub(__m128 a, __m128 b) { return norm4(_mm_sub_ps(norm4(a), norm4(b))); }
