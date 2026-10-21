@@ -10,6 +10,9 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 #define VU1N_INLINE inline __attribute__((always_inline))
 #ifdef VU1N_TRACE_PAIRS
@@ -75,11 +78,14 @@ namespace vu1n
         uint32_t b;
         std::memcpy(&b, &v, 4);
         const uint32_t e = (b >> 23) & 0xFFu;
-        if (e == 0u)
-            b &= 0x80000000u;
-        else if (e == 0xFFu)
-            b = (b & 0x80000000u) | 0x7F7FFFFFu;
-        std::memcpy(&v, &b, 4);
+        if (__builtin_expect(((e + 1u) & 0xFFu) <= 1u, 0)) // e == 0 or e == 0xFF
+        {
+            if (e == 0u)
+                b &= 0x80000000u;
+            else
+                b = (b & 0x80000000u) | 0x7F7FFFFFu;
+            std::memcpy(&v, &b, 4);
+        }
         return v;
     }
 
@@ -253,38 +259,97 @@ namespace vu1n
 
     enum Kind : uint8_t { K_ADD, K_SUB, K_MADD, K_MSUB, K_MUL, K_OPMSUB, K_OPMULA };
 
-    // Core FMAC step. `a` and `b` are normalized operands per lane. productSum ops also feed the sticky flags.
-    inline void fmac(State &s, Kind k, bool toAcc, int dstReg, uint8_t dest, const float *a, const float *b)
+    // Normalize four operands at once (denormal -> signed zero, Inf/NaN -> signed max), like opnd().
+    inline void norm4(const float *v, float *o)
     {
-        if (dest == 0u)
-            return;
-        float acc[4], r[4];
+#if defined(__SSE2__)
+        const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i *>(v));
+        const __m128i e = _mm_and_si128(_mm_srli_epi32(b, 23), _mm_set1_epi32(0xFF));
+        const __m128i sign = _mm_and_si128(b, _mm_set1_epi32(static_cast<int>(0x80000000u)));
+        const __m128i zero = _mm_cmpeq_epi32(e, _mm_setzero_si128());
+        const __m128i big = _mm_cmpeq_epi32(e, _mm_set1_epi32(0xFF));
+        const __m128i bigVal = _mm_or_si128(sign, _mm_set1_epi32(0x7F7FFFFF));
+        __m128i r = _mm_andnot_si128(_mm_or_si128(zero, big), b);
+        r = _mm_or_si128(r, _mm_and_si128(zero, sign));
+        r = _mm_or_si128(r, _mm_and_si128(big, bigVal));
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(o), r);
+#else
         for (int c = 0; c < 4; ++c)
-            acc[c] = opnd(s.acc[c]);
+            o[c] = opnd(v[c]);
+#endif
+    }
+
+    // FMAC result classification fast paths. A result that is neither zero nor near the float underflow/overflow
+    // limits only sets the sign flag and keeps its value; everything else goes through classify(). The float test
+    // keeps two binades of margin so it holds in any rounding mode (the VU1 runs round-toward-zero).
+    VU1N_INLINE bool plainFloat(float v, uint8_t &flags)
+    {
+        uint32_t b;
+        std::memcpy(&b, &v, 4);
+        flags = static_cast<uint8_t>((b >> 31) << 1);
+        return ((b >> 23) & 0xFFu) - 2u < 252u;
+    }
+    VU1N_INLINE bool plainExact(double ex, uint8_t &flags)
+    {
+        constexpr uint64_t kMin = 0x3810000000000000ull; // FLT_MIN (2^-126) as a double
+        constexpr uint64_t kSpan = 0x47EFFFFFE0000000ull - kMin; // FLT_MAX as a double, minus FLT_MIN
+        uint64_t b;
+        std::memcpy(&b, &ex, 8);
+        flags = static_cast<uint8_t>((b >> 63) << 1);
+        return (b & 0x7FFFFFFFFFFFFFFFull) - kMin <= kSpan;
+    }
+
+    // Core FMAC step, specialized per operation. `a` and `b` are normalized operands per lane. productSum ops also
+    // feed the sticky flags. Lanes outside `dest` are not computed: their value and flags are never used.
+    template <Kind K>
+    VU1N_INLINE void fmacK(State &s, bool toAcc, int dstReg, uint8_t dest, const float *a, const float *b)
+    {
+        constexpr bool productSum = K == K_MADD || K == K_MSUB || K == K_OPMSUB;
+        float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f}, r[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        if constexpr (productSum)
+            norm4(s.acc, acc);
         uint8_t lf[4] = {0, 0, 0, 0};
         uint32_t sticky = 0;
-        const bool productSum = k == K_MADD || k == K_MSUB || k == K_OPMSUB;
         for (int c = 0; c < 4; ++c)
         {
-            const float x = a[c], y = b[c];
-            double ex = 0.0;
-            switch (k)
-            {
-            case K_ADD: r[c] = x + y; ex = double(x) + double(y); break;
-            case K_SUB: r[c] = x - y; ex = double(x) - double(y); break;
-            case K_MADD: r[c] = acc[c] + x * y; ex = double(acc[c]) + double(x) * double(y); break;
-            case K_MSUB: r[c] = acc[c] - x * y; ex = double(acc[c]) - double(x) * double(y); break;
-            case K_MUL: r[c] = x * y; ex = double(x) * double(y); break;
-            case K_OPMSUB: r[c] = c == 3 ? 0.0f : acc[c] - x * y; ex = c == 3 ? 0.0 : double(acc[c]) - double(x) * double(y); break;
-            case K_OPMULA: r[c] = c == 3 ? 0.0f : x * y; ex = c == 3 ? 0.0 : double(x) * double(y); break;
-            }
             if (!(dest & (8u >> c)))
                 continue;
-            lf[c] = classify(ex, r[c]);
-            if (productSum)
+            const float x = a[c], y = b[c];
+            uint8_t f;
+            if constexpr (productSum)
             {
-                float p = x * y;
-                sticky |= classify(double(x) * double(y), p) & 0xFu;
+                double ex;
+                if constexpr (K == K_MADD) { r[c] = acc[c] + x * y; ex = double(acc[c]) + double(x) * double(y); }
+                else if constexpr (K == K_MSUB) { r[c] = acc[c] - x * y; ex = double(acc[c]) - double(x) * double(y); }
+                else { r[c] = c == 3 ? 0.0f : acc[c] - x * y; ex = c == 3 ? 0.0 : double(acc[c]) - double(x) * double(y); }
+                if (!plainExact(ex, f))
+                    f = classify(ex, r[c]);
+                lf[c] = f;
+                uint8_t sf;
+                const float p = x * y;
+                if (!plainFloat(p, sf))
+                {
+                    float pv = p;
+                    sf = classify(double(x) * double(y), pv);
+                }
+                sticky |= sf & 0xFu;
+            }
+            else
+            {
+                if constexpr (K == K_ADD) r[c] = x + y;
+                else if constexpr (K == K_SUB) r[c] = x - y;
+                else if constexpr (K == K_MUL) r[c] = x * y;
+                else r[c] = c == 3 ? 0.0f : x * y; // K_OPMULA
+                if (!plainFloat(r[c], f))
+                {
+                    double ex;
+                    if constexpr (K == K_ADD) ex = double(x) + double(y);
+                    else if constexpr (K == K_SUB) ex = double(x) - double(y);
+                    else if constexpr (K == K_MUL) ex = double(x) * double(y);
+                    else ex = c == 3 ? 0.0 : double(x) * double(y);
+                    f = classify(ex, r[c]);
+                }
+                lf[c] = f;
             }
         }
         uint32_t mac = 0, status = 0;
@@ -293,30 +358,48 @@ namespace vu1n
             const uint32_t lane = 8u >> c;
             if (!(dest & lane))
                 continue;
-            if (lf[c] & 1u) mac |= lane;
-            if (lf[c] & 2u) mac |= lane << 4;
-            if (lf[c] & 4u) mac |= lane << 8;
-            if (lf[c] & 8u) mac |= lane << 12;
-            status |= lf[c];
+            const uint32_t f = lf[c];
+            mac |= (lane * (f & 1u)) | ((lane << 4) * ((f >> 1) & 1u)) | ((lane << 8) * ((f >> 2) & 1u)) | ((lane << 12) * ((f >> 3) & 1u));
+            status |= f;
         }
-        FlagE fe{};
-        fe.mac = mac;
-        fe.status = status;
-        fe.extra = sticky;
-        fe.wMac = 1;
-        fe.wStatus = 1;
-        pushFlag(s, fe);
+        for (FlagE &x : s.flagq)
+            if (!x.valid)
+            {
+                x.ready = s.cyc + 4u;
+                x.issue = s.cyc;
+                x.mac = mac;
+                x.status = status;
+                x.extra = sticky;
+                x.clip = 0;
+                x.wMac = 1;
+                x.wStatus = 1;
+                x.wSticky = 0;
+                x.wClip = 0;
+                x.valid = 1;
+                break;
+            }
         if (toAcc)
             applyDest(s.acc, r, dest);
         else
             writeVf(s, dstReg, r, dest);
     }
 
-    inline void norm4(const float *v, float *o)
+    inline void fmac(State &s, Kind k, bool toAcc, int dstReg, uint8_t dest, const float *a, const float *b)
     {
-        for (int c = 0; c < 4; ++c)
-            o[c] = opnd(v[c]);
+        if (dest == 0u)
+            return;
+        switch (k)
+        {
+        case K_ADD: fmacK<K_ADD>(s, toAcc, dstReg, dest, a, b); break;
+        case K_SUB: fmacK<K_SUB>(s, toAcc, dstReg, dest, a, b); break;
+        case K_MADD: fmacK<K_MADD>(s, toAcc, dstReg, dest, a, b); break;
+        case K_MSUB: fmacK<K_MSUB>(s, toAcc, dstReg, dest, a, b); break;
+        case K_MUL: fmacK<K_MUL>(s, toAcc, dstReg, dest, a, b); break;
+        case K_OPMSUB: fmacK<K_OPMSUB>(s, toAcc, dstReg, dest, a, b); break;
+        case K_OPMULA: fmacK<K_OPMULA>(s, toAcc, dstReg, dest, a, b); break;
+        }
     }
+
     inline void bcast(float v, float *o)
     {
         o[0] = o[1] = o[2] = o[3] = opnd(v);
