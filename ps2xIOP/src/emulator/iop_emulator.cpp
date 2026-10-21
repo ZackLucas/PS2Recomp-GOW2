@@ -906,11 +906,19 @@ namespace ps2x::iop::detail
 
     void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
     {
+        static const uint64_t minBatch = [] {
+            const char *v = std::getenv("PS2_IOP_BATCH");
+            return v ? std::max<uint64_t>(1u, std::strtoull(v, nullptr, 10)) : 32u;
+        }();
         const uint64_t total = m_impl->eeCycleCarry + eeCycles;
         const uint64_t iopCycles = total / 8u;
+        if (iopCycles < minBatch)
+        {
+            m_impl->eeCycleCarry = total;
+            return;
+        }
         m_impl->eeCycleCarry = total % 8u;
-        if (iopCycles)
-            m_impl->runCycles(iopCycles);
+        m_impl->runCycles(iopCycles);
     }
 
     RpcResult IopEmulator::handleRpc(const RpcRequest &request)
