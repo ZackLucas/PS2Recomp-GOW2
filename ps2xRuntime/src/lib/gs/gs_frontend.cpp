@@ -1706,6 +1706,48 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
 
 void GS::vertexKick(bool drawing)
 {
+    // PS2_GS_SNAP=<fbp>:<tbp>[:K[:S]] (A26 probe): the whole VRAM as the backend holds it, right before the first vertex
+    // of each pass that draws into frame <fbp> with texture <tbp> (K passes, default 4, after skipping S), to
+    // snap_<fbp>_<tbp>_<n>.bin in the working directory. Through gow2_gs_replay it gives the same point of a PCSX2 dump.
+    {
+        static const std::array<uint32_t, 4> snapCfg = [] {
+            std::array<uint32_t, 4> v{0u, 0u, 0u, 0u};
+            if (const char *s = std::getenv("PS2_GS_SNAP"))
+            {
+                v[2] = 4u;
+                for (int k = 0; s && k < 4; ++k)
+                {
+                    v[k] = std::strtoul(s, nullptr, 10);
+                    s = std::strchr(s, ':');
+                    if (s) ++s;
+                }
+            }
+            return v;
+        }();
+        static bool inSnapPass = false;
+        static uint32_t snapsTaken = 0, snapsSeen = 0;
+        if (snapCfg[2] != 0u)
+        {
+            const GSContext &c = m_ctx[m_prim.ctxt ? 1 : 0];
+            const bool match = m_prim.tme && c.frame.fbp == snapCfg[0] && c.tex0.tbp0 == snapCfg[1];
+            if (match && !inSnapPass && snapsSeen++ >= snapCfg[3] && snapsTaken < snapCfg[2] && m_backend)
+            {
+                std::vector<uint8_t> vram;
+                m_backend->Flush();
+                m_backend->SnapshotVram(vram);
+                char name[64];
+                std::snprintf(name, sizeof name, "snap_%u_%u_%u.bin", snapCfg[0], snapCfg[1], snapsTaken);
+                if (FILE *f = std::fopen(name, "wb"))
+                {
+                    std::fwrite(vram.data(), 1, vram.size(), f);
+                    std::fclose(f);
+                }
+                std::fprintf(stderr, "[gssnap] %s at present %u\n", name, g_gsPresentCount.load());
+                ++snapsTaken;
+            }
+            inSnapPass = match;
+        }
+    }
     if (drawSeqWanted(g_gsPresentCount.load()))
     {
         const GSContext &c = m_ctx[m_prim.ctxt ? 1 : 0];
