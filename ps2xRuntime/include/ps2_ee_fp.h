@@ -5,10 +5,10 @@
 //   * results:  Inf -> +-Fmax (overflow), denormal -> signed zero (underflow)
 //   * SQRT.S of a negative number uses its absolute value; DIV by zero gives +-Fmax (sign = xor of the signs)
 // Flags (FCR31 O/U/I/D and the sticky ones, VU0 MAC/status) are not tracked yet.
-// Rounding (compile-time PS2X_EE_FP_ROUND): 0 (default) rounds ADD/SUB/MUL to nearest and CVT.W.S to nearest;
-// 1 does the same but counts the results that toward-zero rounding would change (ps2x_fp_round_stats, printed with
-// PS2_PERF_STATS); 2 rounds ADD/SUB/MUL and CVT.S.W toward zero and truncates CVT.W.S, like PCSX2 with its default
-// FPU.Roundmode = 3 (Chop). DIV and SQRT stay round-to-nearest (PCSX2's FPUDiv.Roundmode = 0).
+// Rounding (compile-time PS2X_EE_FP_ROUND): 2 (default) rounds ADD/SUB/MUL and CVT.S.W toward zero and truncates
+// CVT.W.S, like PCSX2 with its default FPU.Roundmode = 3 (Chop); DIV and SQRT stay round-to-nearest (PCSX2's
+// FPUDiv.Roundmode = 0). 0 rounds ADD/SUB/MUL and CVT.W.S to nearest (the host default); 1 does the same but counts
+// the results that toward-zero rounding would change (ps2x_fp_round_stats, printed with PS2_PERF_STATS).
 // Rules cross-checked against PCSX2's FPU.cpp behaviour (read to understand, reimplemented here).
 #include <cmath>
 #include <cstdint>
@@ -19,7 +19,7 @@
 extern "C" void ps2x_fp_report(const char *kind, const float *a, const float *b, const float *r, int lanes);
 
 #ifndef PS2X_EE_FP_ROUND
-#define PS2X_EE_FP_ROUND 0
+#define PS2X_EE_FP_ROUND 2
 #endif
 // [op count, results that differ] for: 0 add/sub, 1 mul, 2 CVT.W.S, 3 CVT.S.W (filled only when PS2X_EE_FP_ROUND == 1)
 extern "C" uint64_t ps2x_fp_round_stats[4][2];

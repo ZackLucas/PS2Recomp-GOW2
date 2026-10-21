@@ -1,4 +1,5 @@
-// Unit test of the PS2 EE floating point rules (ps2xRuntime/include/ps2_ee_fp.h). Header-only:
+// Unit test of the PS2 EE floating point rules (ps2xRuntime/include/ps2_ee_fp.h), for the default rounding (add
+// -DPS2X_EE_FP_ROUND=0 to test round-to-nearest). Header-only:
 //   g++ -O1 -msse4.1 -I ps2xRuntime/include games/gow2/tools/ee_fp_test.cpp -o /tmp/ee_fp_test && /tmp/ee_fp_test
 #include <immintrin.h>
 #include <cstdio>
@@ -10,6 +11,11 @@ static void expect(const char *what, float got, uint32_t wantBits)
     ++total;
     const uint32_t g = ps2x_fp::bitsOf(got);
     if (g != wantBits) { ++fails; std::printf("FAIL %s: got %08x want %08x\n", what, g, wantBits); }
+}
+static void expectInt(const char *what, int32_t got, int32_t want)
+{
+    ++total;
+    if (got != want) { ++fails; std::printf("FAIL %s: got %d want %d\n", what, got, want); }
 }
 int main()
 {
@@ -34,7 +40,8 @@ int main()
     expect("inf+(-inf) = 0 (not NaN)", add(inf, ninf), 0u);
     expect("0*inf = 0 (not NaN)", mul(0.0f, inf), 0u);
     expect("inf-inf = 0", sub(inf, inf), 0u);
-    expect("NaN(neg sign)+1 -> -Fmax+1 = -Fmax", add(nan, 1.0f), 0xFF7FFFFFu);
+    // -Fmax + 1 is -Fmax to nearest, and one ulp less in magnitude toward zero.
+    expect("NaN(neg sign)+1 -> -Fmax+1", add(nan, 1.0f), PS2X_EE_FP_ROUND == 2 ? 0xFF7FFFFEu : 0xFF7FFFFFu);
     expect("denormal flush in add", add(den, 0.0f), 0u);
     expect("denormal result flushed", mul(floatOf(0x00800000u), 0.5f), 0u);
     expect("1.5+2.25", add(1.5f, 2.25f), bitsOf(3.75f));
@@ -51,6 +58,32 @@ int main()
     expect("vmul overflow (seen in game) -> Fmax", vr[0], 0x7F7FFFFFu);
     _mm_store_ps(vr, vadd(_mm_load_ps(va), _mm_load_ps(vb)));
     expect("vadd lane1 inf+-inf = 0", vr[1], 0u);
+#if PS2X_EE_FP_ROUND == 2
+    // Toward-zero rounding (PCSX2 FPU.Roundmode = 3): each case gives another result when rounded to nearest.
+    const float q = floatOf(0x33C00000u), r = floatOf(0x33A00000u); // 0.75 and 1.25 ulp of 1.0 below/above
+    expect("1 + 0.75ulp -> 1 (nearest: 1+ulp)", add(1.0f, q), 0x3F800000u);
+    expect("-1 - 0.75ulp -> -1", add(-1.0f, -q), 0xBF800000u);
+    expect("1 - 1.25ulp(below 1) -> 1-2ulp (nearest: 1-ulp)", sub(1.0f, r), 0x3F7FFFFEu);
+    expect("1.5 * (1+ulp) -> 1.5+ulp (nearest: 1.5+2ulp)", mul(1.5f, floatOf(0x3F800001u)), 0x3FC00001u);
+    expect("-1.5 * (1+ulp) -> -(1.5+ulp)", mul(-1.5f, floatOf(0x3F800001u)), 0xBFC00001u);
+    expectInt("CVT.W.S 2.7 -> 2", cvtWS(2.7f), 2);
+    expectInt("CVT.W.S -2.7 -> -2", cvtWS(-2.7f), -2);
+    expectInt("CVT.W.S 3.5 -> 3 (nearest: 4)", cvtWS(3.5f), 3);
+    expectInt("CVT.W.S -3.5 -> -3", cvtWS(-3.5f), -3);
+    expectInt("CVT.W.S 0.99 -> 0", cvtWS(0.99f), 0);
+    expectInt("CVT.W.S 1.5*2^30 -> exact", cvtWS(floatOf(0x4EC00000u)), 1610612736);
+    expectInt("CVT.W.S 2^31 -> INT32_MAX", cvtWS(floatOf(0x4F000000u)), INT32_MAX);
+    expectInt("CVT.W.S -3e9 -> INT32_MIN", cvtWS(-3e9f), INT32_MIN);
+    expect("CVT.S.W 2^24+3 -> 2^24+2 (nearest: 2^24+4)", cvtSW(16777219), 0x4B800001u);
+    expect("CVT.S.W -(2^24+3) -> -(2^24+2)", cvtSW(-16777219), 0xCB800001u);
+    alignas(16) float ta[4] = {1.0f, 1.5f, -1.0f, 2.0f}, tb[4] = {q, 1.0f, -q, 2.0f};
+    _mm_store_ps(vr, vadd(_mm_load_ps(ta), _mm_load_ps(tb)));
+    expect("vadd lane0 1 + 0.75ulp -> 1", vr[0], 0x3F800000u);
+    expect("vadd lane2 -1 - 0.75ulp -> -1", vr[2], 0xBF800000u);
+    tb[1] = floatOf(0x3F800001u);
+    _mm_store_ps(vr, vmul(_mm_load_ps(ta), _mm_load_ps(tb)));
+    expect("vmul lane1 1.5 * (1+ulp) -> 1.5+ulp", vr[1], 0x3FC00001u);
+#endif
     std::printf("%d/%d passed\n", total - fails, total);
     return fails ? 1 : 0;
 }
