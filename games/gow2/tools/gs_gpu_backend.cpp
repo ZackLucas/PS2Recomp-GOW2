@@ -13,7 +13,9 @@
 #include "runtime/gs/gs_cpu_backend.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -59,6 +61,21 @@ public:
     {
         m_stats = std::getenv("PS2_GS_GPU_STATS") != nullptr;
         if (const char *d = std::getenv("PS2_GS_SHADER_DIR")) m_shaderDir = d;
+        // PS2_GS_PRESENT_PROFILE=<json>[:A[:N]]: times the stages of N presentations starting at present A (default 0, 60)
+        // and writes a small JSON. Off by default; when on, the VRAM read is split in glFinish + copy (same total work).
+        if (const char *e = std::getenv("PS2_GS_PRESENT_PROFILE"); e && *e)
+        {
+            std::string v = e;
+            const size_t c1 = v.find(':');
+            m_profPath = v.substr(0, c1);
+            if (c1 != std::string::npos)
+            {
+                m_profStart = std::strtoull(v.c_str() + c1 + 1, nullptr, 10);
+                const size_t c2 = v.find(':', c1 + 1);
+                if (c2 != std::string::npos) m_profCount = std::strtoull(v.c_str() + c2 + 1, nullptr, 10);
+            }
+            m_profOn = !m_profPath.empty() && m_profCount > 0;
+        }
     }
     ~GpuGsBackend() override { stopWorker(); }
 
@@ -114,6 +131,7 @@ public:
     PresentationFrame Present(const GSPresentationRequest &request) override
     {
         PresentationFrame out;
+        if (m_profOn) return presentProfiled(request);
         runControl([&]
                    {
                        m_exec->readVram(m_vram);   // flushes pending draws first
@@ -268,6 +286,68 @@ private:
         m_exec.reset();
     }
 
+    // Same work as Present(), with a clock between the stages: wait for the worker (earlier queued commands + wake-up),
+    // draw submit + GPU completion (flushDraws + glFinish), the 4 MiB VRAM copy, the CPU image assembly, wake-up back.
+    PresentationFrame presentProfiled(const GSPresentationRequest &request)
+    {
+        using clk = std::chrono::steady_clock;
+        PresentationFrame out;
+        const uint64_t idx = m_profIdx++;
+        size_t backlog = 0;
+        {
+            std::lock_guard<std::mutex> lk(m_mx);
+            backlog = m_in.size();
+        }
+        clk::time_point t1, t2, t3, t4;
+        const clk::time_point t0 = clk::now();
+        runControl([&]
+                   {
+                       t1 = clk::now();
+                       m_exec->finish();
+                       t2 = clk::now();
+                       m_exec->readVram(m_vram);   // draws already flushed: barrier + glGetBufferSubData only
+                       t3 = clk::now();
+                       out = m_view.Present(request);
+                       t4 = clk::now();
+                       reportStats();
+                   });
+        const clk::time_point t5 = clk::now();
+        auto ms = [](clk::time_point a, clk::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+        if (idx >= m_profStart && m_profRows.size() < m_profCount && m_profHavePrev)
+        {
+            m_profRows.push_back({ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t0, t5),
+                                  ms(m_profPrev, t0), static_cast<double>(backlog)});
+            if (m_profRows.size() == m_profCount) writeProfile();
+        }
+        m_profPrev = t0;
+        m_profHavePrev = true;
+        return out;
+    }
+
+    void writeProfile()
+    {
+        static const char *names[8] = {"wait_worker", "gpu_submit_finish", "vram_copy_4mib", "cpu_assemble", "wake_back",
+                                       "present_total", "period_since_prev_present", "queue_backlog_cmds"};
+        FILE *f = std::fopen(m_profPath.c_str(), "w");
+        if (!f) { std::fprintf(stderr, "[gpu-gs] cannot write %s\n", m_profPath.c_str()); return; }
+        std::fprintf(f, "{\n  \"presents_recorded\": %zu,\n  \"first_present_index\": %llu,\n", m_profRows.size(),
+                     (unsigned long long)m_profStart);
+        for (int c = 0; c < 8; ++c)
+        {
+            std::vector<double> v;
+            for (const auto &r : m_profRows) v.push_back(r[c]);
+            std::sort(v.begin(), v.end());
+            double sum = 0;
+            for (double x : v) sum += x;
+            std::fprintf(f, "  \"%s%s\": {\"mean\": %.3f, \"median\": %.3f, \"p95\": %.3f, \"max\": %.3f}%s\n", names[c],
+                         c == 7 ? "" : "_ms", sum / v.size(), v[v.size() / 2], v[(v.size() * 95) / 100 >= v.size() ? v.size() - 1 : (v.size() * 95) / 100],
+                         v.back(), c == 7 ? "" : ",");
+        }
+        std::fprintf(f, "}\n");
+        std::fclose(f);
+        std::fprintf(stderr, "[gpu-gs] present profile written to %s (%zu presents)\n", m_profPath.c_str(), m_profRows.size());
+    }
+
     void reportStats()
     {
         if (!m_stats || (++m_presents % 60u) != 0u) return;
@@ -290,6 +370,12 @@ private:
     bool m_stats = false;
     bool m_failed = false;
     uint64_t m_presents = 0;
+    bool m_profOn = false;
+    bool m_profHavePrev = false;
+    std::string m_profPath;
+    uint64_t m_profStart = 0, m_profCount = 60, m_profIdx = 0;
+    std::chrono::steady_clock::time_point m_profPrev;
+    std::vector<std::array<double, 8>> m_profRows;
 
     std::thread m_worker;
     std::mutex m_mx;
