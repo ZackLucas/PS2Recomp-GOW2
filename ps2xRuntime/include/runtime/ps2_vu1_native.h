@@ -140,10 +140,26 @@ namespace vu1n
     }
     inline void commit(State &s)
     {
-        for (FlagE &e : s.flagq)
+        // Several entries can become ready inside one stall; they must land in ready-cycle order (ties: slot
+        // order), as the interpreter does by committing every cycle. Slot order alone is arbitrary.
+        uint8_t order[8];
+        int n = 0;
+        for (int i = 0; i < 8; ++i)
         {
+            const FlagE &e = s.flagq[i];
             if (!e.valid || e.ready > s.cyc)
                 continue;
+            int j = n++;
+            while (j > 0 && s.flagq[order[j - 1]].ready > e.ready)
+            {
+                order[j] = order[j - 1];
+                --j;
+            }
+            order[j] = static_cast<uint8_t>(i);
+        }
+        for (int k = 0; k < n; ++k)
+        {
+            FlagE &e = s.flagq[order[k]];
             if (e.wMac)
                 s.mac = e.mac;
             if (e.wStatus)

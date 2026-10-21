@@ -24,9 +24,9 @@ static std::vector<uint8_t> readFile(const char *path)
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
-struct Trace { std::vector<uint32_t> pairs; std::vector<uint32_t> mac; };
-static void nativeTrace(void *c, uint32_t pair, const vu1n::State *s) { static_cast<Trace *>(c)->pairs.push_back(pair); static_cast<Trace *>(c)->mac.push_back(s ? s->mac : 0); }
-static void interpTrace(void *c, uint32_t pc, const VU1State &s) { static_cast<Trace *>(c)->pairs.push_back(pc / 8); static_cast<Trace *>(c)->mac.push_back(s.mac); }
+struct Trace { std::vector<uint32_t> pairs; std::vector<uint32_t> mac; std::vector<uint64_t> cyc; };
+static void nativeTrace(void *c, uint32_t pair, const vu1n::State *s) { static_cast<Trace *>(c)->pairs.push_back(pair); static_cast<Trace *>(c)->mac.push_back(s ? s->mac : 0); static_cast<Trace *>(c)->cyc.push_back(s ? s->cyc : 0); }
+static void interpTrace(void *c, uint32_t pc, const VU1State &s) { static_cast<Trace *>(c)->pairs.push_back(pc / 8); static_cast<Trace *>(c)->mac.push_back(s.mac); static_cast<Trace *>(c)->cyc.push_back(s.cycles); }
 
 struct Packets
 {
@@ -153,6 +153,10 @@ int main(int argc, char **argv)
                 uint32_t lo, hi; std::memcpy(&lo, code.data() + ti.pairs[q] * 8, 4); std::memcpy(&hi, code.data() + ti.pairs[q] * 8 + 4, 4);
                 std::printf(" [pair %u upper=%08x lower=%08x mac=%04x]", ti.pairs[q], hi, lo, ti.mac[q] & 0xFFFF);
             }
+            std::printf("\n");
+            std::printf("CYC steps %zu..%zu (native/interp cycle at pair start):", k > 8 ? k - 8 : 0, k + 2);
+            for (size_t q = k > 8 ? k - 8 : 0; q <= k + 2 && q < ti.cyc.size() && q < tn.cyc.size(); ++q)
+                std::printf(" [%zu pair %u n=%llu i=%llu]", q, ti.pairs[q], (unsigned long long)tn.cyc[q], (unsigned long long)ti.cyc[q]);
             std::printf("\n");
             std::printf("TAIL %s last pairs (interp):", argv[ai]);
             for (size_t q = ti.pairs.size() > 16 ? ti.pairs.size() - 16 : 0; q < ti.pairs.size(); ++q)
