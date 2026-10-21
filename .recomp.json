@@ -16,5 +16,5 @@
     "Memory card authentication (SecrAuthCard)",
     "Sound (989snd / SPU2)"
   ],
-  "notes": "Boots to the main menu with working controller input; the menu renders like PCSX2 except Kratos' face. Far too slow to play. Latest work on the gow2-gpu-gs branch."
+  "notes": "Boots to the main menu with working controller input; the menu renders like PCSX2 except Kratos' face. Far too slow to play. Latest work on the release branch."
 }
