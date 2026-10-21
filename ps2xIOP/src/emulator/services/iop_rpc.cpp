@@ -292,24 +292,40 @@ namespace ps2x::iop::detail
             m_kernel.sleepCurrent(cpu);
             setV0(0);
             return true;
-        case 23:
+        case 23: // sceSifGetOtherData: copy EE source into IOP destination
+        {
+            constexpr uint32_t kReceiveDataSize = 0x1Cu;
+            constexpr uint32_t kReceiveMetadataOffset = 0x10u;
+            const uint32_t descriptor = cpu.gpr[4];
+            const uint32_t source = cpu.gpr[5];
+            const uint32_t destination = cpu.gpr[6];
+            const int32_t signedSize = static_cast<int32_t>(cpu.gpr[7]);
+            bool copied = false;
+
+            if (signedSize > 0 && static_cast<uint32_t>(signedSize) <= IopMemory::RamSize &&
+                m_memory.ownsRamRange(descriptor, kReceiveDataSize) &&
+                m_memory.ownsRamRange(destination, static_cast<uint32_t>(signedSize)))
+            {
+                const uint32_t size = static_cast<uint32_t>(signedSize);
+                std::vector<uint8_t> payload(size);
+                if (m_host.readGuest(source, payload.data(), payload.size()) &&
+                    m_memory.writeRam(destination, payload.data(), payload.size()))
+                {
+                    const std::array<uint32_t, 3> metadata{source, destination, size};
+                    copied = m_memory.writeRam(descriptor + kReceiveMetadataOffset,
+                                               metadata.data(), sizeof(metadata));
+                }
+            }
+
             traceIop([&](auto &out) {
-                out << "event=get_other_data_stub pc=0x" << std::hex << cpu.pc
-                    << " ra=0x" << cpu.gpr[31] << " descriptor=0x" << cpu.gpr[4]
-                    << " source=0x" << cpu.gpr[5] << " destination=0x" << cpu.gpr[6]
-                    << " size=" << std::dec << cpu.gpr[7];
-                std::array<uint32_t, 8> words{};
-                const uint32_t size = std::min<uint32_t>(cpu.gpr[7], sizeof(words));
-                const bool read = m_host.readGuest(cpu.gpr[5], words.data(), size);
-                out << " source_read=" << read << " source_words=" << std::hex;
-                for (uint32_t i = 0; read && i < size / 4; ++i)
-                    out << "0x" << words[i] << ',';
-                out << " destination_words=";
-                for (uint32_t i = 0; i < size / 4; ++i)
-                    out << "0x" << m_memory.read32(cpu.gpr[6] + i * 4) << ',';
+                out << "event=get_other_data pc=0x" << std::hex << cpu.pc
+                    << " ra=0x" << cpu.gpr[31] << " descriptor=0x" << descriptor
+                    << " source=0x" << source << " destination=0x" << destination
+                    << " size=" << std::dec << signedSize << " copied=" << copied;
             });
-            setV0(0);
+            setV0(copied ? 0u : static_cast<uint32_t>(-1));
             return true;
+        }
         case 24: // RemoveRpc
         {
             const uint32_t serverData = cpu.gpr[4];

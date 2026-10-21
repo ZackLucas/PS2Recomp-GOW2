@@ -615,6 +615,57 @@ namespace
         std::memcpy(host.guest.data() + address + codeOffset, segment.data(), segment.size());
     }
 
+    void writeSifGetOtherDataIrx(TestHost &host,
+                                 uint32_t address,
+                                 uint32_t eeSource,
+                                 uint32_t iopDestination = 0x000101C0u,
+                                 uint32_t transferSize = sizeof(uint32_t))
+    {
+        constexpr uint32_t codeOffset = 0x100u;
+        constexpr uint32_t loadAddress = 0x00010000u;
+        constexpr uint32_t importTableAddress = loadAddress + 0x100u;
+        constexpr uint32_t importStub = importTableAddress + 20u;
+        ElfHeader header{};
+        header.ident[0] = 0x7Fu; header.ident[1] = 'E'; header.ident[2] = 'L'; header.ident[3] = 'F';
+        header.ident[4] = 1u; header.ident[5] = 1u; header.ident[6] = 1u;
+        header.type = 2u; header.machine = 8u; header.version = 1u;
+        header.entry = loadAddress; header.phoff = sizeof(ElfHeader);
+        header.ehsize = sizeof(ElfHeader); header.phentsize = sizeof(ProgramHeader); header.phnum = 1u;
+
+        ProgramHeader program{};
+        program.type = 1u; program.offset = codeOffset; program.vaddr = loadAddress; program.paddr = loadAddress;
+        program.filesz = 0x200u; program.memsz = 0x200u; program.flags = 7u; program.align = 4u;
+
+        const auto jal = [](uint32_t target) { return 0x0C000000u | ((target >> 2u) & 0x03FFFFFFu); };
+        const uint32_t entry[] = {
+            0x27BDFFF0u, 0xAFBF000Cu,
+            0x3C040001u, 0x34840180u, // descriptor in a0
+            (0x3C050000u | ((eeSource >> 16u) & 0xFFFFu)),
+            (0x34A50000u | (eeSource & 0xFFFFu)), // EE source in a1
+            (0x3C060000u | ((iopDestination >> 16u) & 0xFFFFu)),
+            (0x34C60000u | (iopDestination & 0xFFFFu)), // IOP destination in a2
+            (0x3C070000u | ((transferSize >> 16u) & 0xFFFFu)),
+            (0x34E70000u | (transferSize & 0xFFFFu)), // size in a3
+            jal(importStub), 0x00000000u,
+            0x8FBF000Cu, 0x27BD0010u, 0x03E00008u, 0x00000000u,
+        };
+        const uint32_t imports[] = {
+            0x41E00000u, 0u, 0x00000101u,
+            0x63666973u, 0x0000646Du, // "sifcmd"
+            0x03E00008u, 0x24000017u, // sceSifGetOtherData (ordinal 23)
+            0u, 0u,
+        };
+        const uint32_t descriptor[7] = {};
+        std::vector<uint8_t> segment(program.filesz, 0u);
+        std::memcpy(segment.data(), entry, sizeof(entry));
+        std::memcpy(segment.data() + 0x100u, imports, sizeof(imports));
+        std::memcpy(segment.data() + 0x180u, descriptor, sizeof(descriptor));
+        std::memset(host.guest.data() + address, 0, codeOffset + program.filesz);
+        std::memcpy(host.guest.data() + address, &header, sizeof(header));
+        std::memcpy(host.guest.data() + address + sizeof(header), &program, sizeof(program));
+        std::memcpy(host.guest.data() + address + codeOffset, segment.data(), segment.size());
+    }
+
     void writeMcmanRegistrationIrx(TestHost &host, uint32_t address)
     {
         constexpr uint32_t codeOffset = 0x100u;
@@ -1031,6 +1082,46 @@ int main()
                 "sceSifDmaStat did not report the synchronous transfer as complete")) return 1;
     if (!expect(sifDmaPayload == 0x53494621u,
                 "IOP sceSifSetDma did not copy the payload into EE memory")) return 1;
+
+    iop.reset();
+    constexpr uint32_t getOtherDataSource = 0x900u;
+    constexpr uint32_t getOtherDataExpected = 0x53494621u;
+    std::memcpy(host.guest.data() + getOtherDataSource, &getOtherDataExpected, sizeof(getOtherDataExpected));
+    writeSifGetOtherDataIrx(host, 0x100u, getOtherDataSource);
+    const ModuleLoadResult getOtherData = iop.loadModuleBuffer(0x100u);
+    uint32_t getOtherDataPayload = 0u;
+    uint32_t getOtherDataMetadata[3]{};
+    const bool gotOtherDataPayload = iop.readMemory(0x000101C0u, &getOtherDataPayload, sizeof(getOtherDataPayload));
+    const bool gotOtherDataMetadata = iop.readMemory(0x00010190u, getOtherDataMetadata, sizeof(getOtherDataMetadata));
+    if (!expect(getOtherData.handled && getOtherData.startResult == 0,
+                "IOP sceSifGetOtherData did not report a valid EE-to-IOP transfer as successful")) return 1;
+    if (!expect(gotOtherDataPayload && getOtherDataPayload == getOtherDataExpected,
+                "IOP sceSifGetOtherData did not copy EE memory into physical IOP RAM")) return 1;
+    if (!expect(gotOtherDataMetadata && getOtherDataMetadata[0] == getOtherDataSource &&
+                    getOtherDataMetadata[1] == 0x000101C0u && getOtherDataMetadata[2] == sizeof(uint32_t),
+                "IOP sceSifGetOtherData did not populate the receive descriptor")) return 1;
+
+    iop.reset();
+    writeSifGetOtherDataIrx(host, 0x100u, 0xE0000200u);
+    const ModuleLoadResult invalidGetOtherData = iop.loadModuleBuffer(0x100u);
+    getOtherDataPayload = 0xFFFFFFFFu;
+    const bool readFailedDestination = iop.readMemory(0x000101C0u, &getOtherDataPayload, sizeof(getOtherDataPayload));
+    if (!expect(invalidGetOtherData.handled && invalidGetOtherData.startResult == -1,
+                "IOP sceSifGetOtherData accepted an invalid EE source range")) return 1;
+    if (!expect(readFailedDestination && getOtherDataPayload == 0u,
+                "failed IOP sceSifGetOtherData modified its destination")) return 1;
+
+    iop.reset();
+    writeSifGetOtherDataIrx(host, 0x100u, getOtherDataSource, 0x00200000u);
+    const ModuleLoadResult invalidGetOtherDataDestination = iop.loadModuleBuffer(0x100u);
+    if (!expect(invalidGetOtherDataDestination.handled && invalidGetOtherDataDestination.startResult == -1,
+                "IOP sceSifGetOtherData accepted an out-of-range IOP destination")) return 1;
+
+    iop.reset();
+    writeSifGetOtherDataIrx(host, 0x100u, getOtherDataSource, 0x000101C0u, 0x00200001u);
+    const ModuleLoadResult oversizedGetOtherData = iop.loadModuleBuffer(0x100u);
+    if (!expect(oversizedGetOtherData.handled && oversizedGetOtherData.startResult == -1,
+                "IOP sceSifGetOtherData accepted a transfer larger than IOP RAM")) return 1;
 
     iop.reset();
     writeVblankSchedulingIrx(host, 0x100u);
