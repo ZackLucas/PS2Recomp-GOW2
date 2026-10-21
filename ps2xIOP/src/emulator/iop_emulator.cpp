@@ -423,14 +423,29 @@ namespace ps2x::iop::detail
                         range = {1u, 0u};
                 return range;
             }();
+            static const auto tracePeek = [] {
+                std::pair<unsigned, unsigned> peek{0u, 0u};
+                if (const char *value = std::getenv("PS2_TRACE_IOP_PEEK"))
+                    if (std::sscanf(value, "%x:%u", &peek.first, &peek.second) != 2 ||
+                        peek.second > 32u || peek.first >= kRamSize ||
+                        peek.second * 4u > kRamSize - peek.first)
+                        peek = {0u, 0u};
+                return peek;
+            }();
             if (cpu.pc >= traceRange.first && cpu.pc <= traceRange.second)
                 traceIop([&](auto &out) {
                     out << "event=pc pc=0x" << std::hex << cpu.pc << " instruction=0x" << memory.read32(cpu.pc);
-                    for (unsigned r : {2u, 3u, 4u, 5u, 6u, 7u, 16u, 17u, 18u, 19u, 29u, 31u})
+                    for (unsigned r : {2u, 3u, 4u, 5u, 6u, 7u, 16u, 17u, 18u, 19u, 20u, 21u, 22u, 23u, 28u, 29u, 30u, 31u})
                         out << " r" << std::dec << r << "=0x" << std::hex << cpu.gpr[r];
                     out << " s1_word=0x" << memory.read32(cpu.gpr[17])
                         << " s2_word=0x" << memory.read32(cpu.gpr[18])
                         << " s3_word=0x" << memory.read32(cpu.gpr[19]);
+                    if (tracePeek.second != 0u)
+                    {
+                        out << " peek_address=0x" << tracePeek.first << " peek_words=";
+                        for (unsigned i = 0u; i < tracePeek.second; ++i)
+                            out << "0x" << memory.read32(tracePeek.first + i * 4u) << ',';
+                    }
                 });
 
             if (const auto import = imports.decode(cpu.pc))

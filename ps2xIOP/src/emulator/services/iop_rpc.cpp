@@ -393,6 +393,13 @@ namespace ps2x::iop::detail
         traceIop([&](auto &out) {
             out << "event=rpc_return sid=0x" << std::hex << request.sid
                 << " function=0x" << request.function << " pointer=0x" << returnPointer;
+            const uint32_t response = returnPointer != 0u ? returnPointer : server.buffer;
+            std::array<uint32_t, 8> words{};
+            const uint32_t size = std::min<uint32_t>(request.receive.size, sizeof(words)) & ~3u;
+            const bool read = m_memory.readRam(response, words.data(), size);
+            out << " response_read=" << read << " words=";
+            for (uint32_t i = 0; read && i < size / sizeof(uint32_t); ++i)
+                out << "0x" << words[i] << ',';
         });
         if (returnPointer == 0u)
             returnPointer = server.buffer;
