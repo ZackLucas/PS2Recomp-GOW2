@@ -9,6 +9,8 @@
 // usage: gow2_gs_replay dump.gs[.zst] [--ref ref.rgba W H] [--out prefix]
 //                       [--vram-offset N | --scan-vram-offset] [--frames N]
 // --out writes <prefix>N.ppm per frame and <prefix>init.ppm, the frame PCSX2 left in VRAM when the dump started.
+// Frames go through the runtime's present, so an interlaced FFMD=0 frame comes out whole (both fields), as the game
+// shows it; PS2_GS_PRESENT_FIELD=0|1 writes a single field with doubled lines instead.
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_memory.h"
 
