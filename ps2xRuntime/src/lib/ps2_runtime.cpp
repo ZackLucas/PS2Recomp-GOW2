@@ -79,7 +79,7 @@ void ps2WatchHit(uint32_t guestAddr, uint32_t size, uint64_t valueLo, uint64_t v
         return;
     const uint32_t ra = ctx ? static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31])) : 0u;
     auto reg = [&](int i) { return ctx ? static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[i])) : 0u; };
-    std::fprintf(stderr, "[watch] #%d %s addr=%08x size=%u lo=%016llx hi=%016llx ra=%08x s0=%08x s1=%08x s2=%08x s3=%08x s4=%08x sp=%08x\n", n, op, guestAddr, size,
+    std::fprintf(stderr, "[watch] #%d %s pc=%08x addr=%08x size=%u lo=%016llx hi=%016llx ra=%08x s0=%08x s1=%08x s2=%08x s3=%08x s4=%08x sp=%08x\n", n, op, ctx ? ctx->pc : 0u, guestAddr, size,
                  static_cast<unsigned long long>(valueLo), static_cast<unsigned long long>(valueHi), ra, reg(16), reg(17), reg(18), reg(19), reg(20), reg(29));
 }
 
@@ -839,6 +839,34 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     if (const char *stateEnv = std::getenv("PS2_STATE_DUMP"))
+                                     {
+                                         // PS2_STATE_DUMP=<vsync>: at the first MSCAL after that guest VSync, write EE RAM, scratchpad,
+                                         // VU0/VU1 data memory and the VU0 registers to state_<vsync>_{ee,spr,vu0,vu1,vu0regs}.bin.
+                                         static const uint64_t dumpAt = std::strtoull(stateEnv, nullptr, 10);
+                                         static bool stateDumped = false;
+                                         if (!stateDumped && m_eeScheduler && m_eeScheduler->currentVSyncTick() >= dumpAt)
+                                         {
+                                             stateDumped = true;
+                                             auto writeFile = [&](const char *tag, const void *data, size_t size)
+                                             {
+                                                 char name[64];
+                                                 std::snprintf(name, sizeof(name), "state_%llu_%s.bin", static_cast<unsigned long long>(dumpAt), tag);
+                                                 if (FILE *f = std::fopen(name, "wb"))
+                                                 {
+                                                     std::fwrite(data, 1, size, f);
+                                                     std::fclose(f);
+                                                 }
+                                             };
+                                             writeFile("ee", m_memory.getRDRAM(), PS2_RAM_SIZE);
+                                             writeFile("spr", m_memory.getScratchpad(), PS2_SCRATCHPAD_SIZE);
+                                             writeFile("vu0", m_memory.getVU0Data(), PS2_VU0_DATA_SIZE);
+                                             writeFile("vu1", m_memory.getVU1Data(), PS2_VU1_DATA_SIZE);
+                                             writeFile("vu0regs", cpuContext->vu0_vf, sizeof(cpuContext->vu0_vf));
+                                             std::fprintf(stderr, "[statedump] vsync=%llu mscal pc=%u top=%u itop=%u\n",
+                                                          static_cast<unsigned long long>(m_eeScheduler->currentVSyncTick()), startPC, top, itop);
+                                         }
+                                     }
                                      if (const char *dumpEnv = std::getenv("PS2_EE_DUMP"))
                                      {
                                          static int dumpCalls = 0;

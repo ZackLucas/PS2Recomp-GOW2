@@ -2,6 +2,7 @@
 #include "ps2recomp/code_generator.h"
 #include "ps2recomp/instructions.h"
 #include "ps2recomp/ps2_recompiler.h"
+#include "ps2recomp/r5900_decoder.h"
 #include "ps2recomp/types.h"
 #include <filesystem>
 #include <fstream>
@@ -446,6 +447,54 @@ void register_code_generator_tests()
                  "loadImage-like GIF DMA stores should coalesce into the native kick helper");
         t.IsTrue(generated.find("WRITE32(ADD32(GPR_U32(ctx, 3), 0), GPR_U32(ctx, 4));") == std::string::npos,
                  "coalesced delay-slot CHCR store should not remain as an individual WRITE32");
+    });
+
+    tc.Run("sign branches test the full 64-bit register", [](TestCase &t) {
+        // BLTZ/BGEZ/BLEZ/BGTZ and their likely/link forms compare GPR[rs] as a signed 64-bit value
+        // (EE manual; PCSX2 Interpreter.cpp uses GPR.r[rs].SD[0]). Soft-float double code branches on
+        // the sign of 64-bit DSUBU/DSLL results, where bit 31 says nothing about the sign.
+        struct Case
+        {
+            const char *name;
+            uint32_t raw;
+            const char *condition;
+        };
+        const uint32_t rs = 2u << 21;
+        const Case cases[] = {
+            {"blez", (OPCODE_BLEZ << 26) | rs | 0x3, "(GPR_S64(ctx, 2) <= 0)"},
+            {"bgtz", (OPCODE_BGTZ << 26) | rs | 0x3, "(GPR_S64(ctx, 2) > 0)"},
+            {"blezl", (OPCODE_BLEZL << 26) | rs | 0x3, "(GPR_S64(ctx, 2) <= 0)"},
+            {"bgtzl", (OPCODE_BGTZL << 26) | rs | 0x3, "(GPR_S64(ctx, 2) > 0)"},
+            {"bltz", (OPCODE_REGIMM << 26) | rs | (REGIMM_BLTZ << 16) | 0x3, "(GPR_S64(ctx, 2) < 0)"},
+            {"bgez", (OPCODE_REGIMM << 26) | rs | (REGIMM_BGEZ << 16) | 0x3, "(GPR_S64(ctx, 2) >= 0)"},
+            {"bltzl", (OPCODE_REGIMM << 26) | rs | (REGIMM_BLTZL << 16) | 0x3, "(GPR_S64(ctx, 2) < 0)"},
+            {"bgezl", (OPCODE_REGIMM << 26) | rs | (REGIMM_BGEZL << 16) | 0x3, "(GPR_S64(ctx, 2) >= 0)"},
+            {"bltzal", (OPCODE_REGIMM << 26) | rs | (REGIMM_BLTZAL << 16) | 0x3, "(GPR_S64(ctx, 2) < 0)"},
+            {"bgezal", (OPCODE_REGIMM << 26) | rs | (REGIMM_BGEZAL << 16) | 0x3, "(GPR_S64(ctx, 2) >= 0)"},
+        };
+
+        for (const Case &c : cases)
+        {
+            Function func;
+            func.name = std::string("sign_branch_") + c.name;
+            func.start = 0x3000;
+            func.end = 0x3018;
+            func.isRecompiled = true;
+            func.isStub = false;
+
+            R5900Decoder decoder;
+            std::vector<Instruction> instructions;
+            instructions.push_back(decoder.decodeInstruction(0x3000, c.raw));
+            for (uint32_t address = 0x3004; address < func.end; address += 4)
+                instructions.push_back(makeNop(address));
+
+            CodeGenerator gen({}, {});
+            const std::string generated = gen.generateFunction(func, instructions, false);
+            t.IsTrue(generated.find(c.condition) != std::string::npos,
+                     std::string(c.name) + " should test the 64-bit register: " + c.condition);
+            t.IsTrue(generated.find("GPR_S32(ctx, 2)") == std::string::npos,
+                     std::string(c.name) + " must not test only the low 32 bits");
+        }
     });
 
         tc.Run("emits labels and gotos for internal branches", [](TestCase &t) {

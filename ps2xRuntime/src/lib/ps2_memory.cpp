@@ -1615,6 +1615,20 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     processPendingTransfers();
                 }
             }
+            else
+            {
+                // Nothing services this start: the data is silently dropped. Report each channel/mode once.
+                static bool reported[32][4] = {};
+                const uint32_t channelIndex = ((channelBase - 0x10008000u) >> 10) & 0x1Fu;
+                const uint32_t mode = (value >> 2) & 0x3u;
+                if (!reported[channelIndex][mode])
+                {
+                    reported[channelIndex][mode] = true;
+                    std::fprintf(stderr, "[dma] unhandled start ch=%08x mode=%u chcr=%08x madr=%08x qwc=%u tadr=%08x sadr=%08x d_ctrl=%08x\n",
+                                 channelBase, mode, value, madr, qwc, m_ioRegisters[channelBase + 0x30], m_ioRegisters[channelBase + 0x80],
+                                 m_ioRegisters[0x1000E000u]);
+                }
+            }
         }
         return true;
     }

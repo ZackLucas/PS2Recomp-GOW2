@@ -15,11 +15,11 @@ Sizes measured on 2026-10-20.
 
 | Data | Path (under `pcsx2-ref/`) | Size | Contents | Read with |
 |---|---|---|---|---|
-| Main menu dump | `God of War II_SCUS-97481_20261015000734.gs.zst` | 7 MB | PCSX2 GS dump of the main menu, 4 VSyncs | `gow2_gs_replay`, `gow2_gs_gpu_replay`, `gsdump.py draws\|tris`; `trunc_bisect.py`, `trunc_exact.py` and `vram_bisect.py` use it by default |
+| Main menu dump | `God of War II_SCUS-97481_20261015000734.gs.zst` | 7 MB | PCSX2 GS dump of the main menu, 4 VSyncs | `gow2_gs_replay`, `gow2_gs_gpu_replay`, `gsdump.py draws\|tris`, `gsdump_drawn.py`; `trunc_bisect.py`, `trunc_exact.py` and `vram_bisect.py` use it by default |
 | Scene dumps | `scenes/` | 31 MB | 4 dumps (difficulty menu and 3 FMVs) and 1 pause screen in `pause/`, next to our GPU replay frames (`*_gpuN.ppm`) | `gow2_gs_replay`, `gow2_gs_gpu_replay`, `gsdump.py` |
 | Gameplay dumps | `gameplay/` | 261 MB | 19 dumps of the Colossus fight (recorded 2026-10-16), our GPU replay frames, `pares/` (the 18 PCSX2 × GPU pairs checked by eye on 2026-10-16) and `hud/` (HUD crops) | `gow2_gs_gpu_replay`, `hud_exact.py` |
 | Captured VU1 calls | `vu1progs/` | 19 MB | 845 calls (`in_<image>_pc<N>_<k>.bin`, from `PS2_VU1_CAPTURE`) and 142 code images (`vu1_<image>.bin`) | `gow2_vu1_prog_test`, `gow2_vu1_run_one`, `vu1_in_dump.py`, `pcsx2_vu1_batch.py` |
-| PCSX2 savestates | `sstates/` | 43 MB | `menu/menu_boot.p2s` and `user/user_save.p2s`, plus the VU1 state taken from them (`<tag>_internal.dat`, `<tag>_vu1Memory.bin`, `<tag>_vu1MicroMem.bin`) | `vu1_ss_inputs.py`, `gow2_vu1_ss_test`; base state for `pcsx2_vu1_inject.py` and `pcsx2_vu1_batch.py` |
+| PCSX2 savestates | `sstates/` | 43 MB | `menu/menu_boot.p2s` and `user/user_save.p2s`, plus the VU1 state taken from them (`<tag>_internal.dat`, `<tag>_vu1Memory.bin`, `<tag>_vu1MicroMem.bin`) | `p2s_extract.py` (any member, e.g. `eeMemory.bin` to compare with `PS2_STATE_DUMP`), `vu1_ss_inputs.py`, `gow2_vu1_ss_test`; base state for `pcsx2_vu1_inject.py` and `pcsx2_vu1_batch.py` |
 | VU1 oracle runs | `inj/` | 321 MB | see below | `pcsx2_vu1_batch.py`, `gow2_vu1_run_one`, `vu1_in_dump.py --raw` |
 
 `inj/` holds:
