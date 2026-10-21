@@ -45,6 +45,29 @@ The small curated JSON is in the vault; audio, screenshots (`frame_*.png`) and
 raw logs stay outside git. The longer capture predates only the final volume
 readback UB fix and optional DMA hash trace; `final` checks the final build.
 
+## VU1 native segments (2026-10-21)
+
+Generated C++ for the native VU1 plugin, configured with `-DGOW2_VU1_GEN_DIR=<dir>`
+(see `tools/CMakeLists.txt`). It is derived from game code, so it stays out of git.
+The set measured in item 25 (menu, 10.7 VSync/s) is
+`~/gow2/item25-2026-10-21/vu1gen-merged/`: 193 `seg_*.cpp` files and
+`vu1_registry.cpp`, 5.4 MB. Proposed home, not moved yet: `~/gow2/vu1gen/`.
+
+- Inputs for `gow2_vu1_gen <dir> image.bin ...`: `pcsx2-ref/vu1progs/vu1_*.bin`
+  (142), `pcsx2-ref/vu1progs_fix/*.bin` (55) and the 10 images captured in item 25
+  (`item25-2026-10-21/cap/vu1_*.bin`). 207 images in all.
+- From these images, 173 of the 183 older segments and all 10 segments of item 25
+  are rebuilt under the same names. The generator writes 1,134 segments in all, so
+  the 193-segment set is a subset of its output.
+- 10 older segments cannot be rebuilt, because their images are no longer on disk:
+  `seg_22_8719a073085a39eb`, `seg_23_a254c1730a1f8a3c`, `seg_24_3d03c57d2fea874d`,
+  `seg_25_cbc3b8e5e0dceebb`, `seg_26_7aa654911c2e387e`, `seg_27_e729368019bdad9e`,
+  `seg_28_edc88bbe82dfa81d`, `seg_29_e5a4c07229825d43`, `seg_30_b15e65bb7539de0b`,
+  `seg_31_d7be3dec6934484b` (all `.cpp`). They exist only in the copy, so that copy
+  must be kept and must not be regenerated over.
+- The older copy, `~/gow2/vu1gen/` (183 segments), is byte-identical to the new set
+  for all 183 files. Only `vu1_registry.cpp` differs.
+
 ## Other uncatalogued data (probably regenerable, kept for now)
 
 `logs/` (1.6 GB), `run8.log` (161 MB), `shots/**/ps2_log.txt`, `output_v2` … `output_v8`
