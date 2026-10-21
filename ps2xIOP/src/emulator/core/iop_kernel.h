@@ -58,6 +58,10 @@ namespace ps2x::iop::detail
         [[nodiscard]] int createInternalEventFlag(uint32_t attr, uint32_t option, uint32_t bits);
         [[nodiscard]] bool setInternalEventFlag(int id, uint32_t bits);
 
+        // True when WaitSema(id) would have to block but no thread is running: a synchronous guest call
+        // (an RPC server, for instance) has nothing to park.
+        [[nodiscard]] bool waitWouldStall(int semaphoreId) const;
+
         void sleepCurrent(IopCpuState &cpu);
         void delayCurrentUntil(uint64_t wakeCycle, IopCpuState &cpu);
 

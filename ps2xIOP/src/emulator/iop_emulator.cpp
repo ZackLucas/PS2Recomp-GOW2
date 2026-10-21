@@ -143,6 +143,7 @@ namespace ps2x::iop::detail
             moduleCursor = kModuleLoadBase;
             totalCycles = 0;
             totalInstructions = 0;
+            stallInstructions = 0;
             eeCycleCarry = 0;
             activeCpu = nullptr;
             lastError.clear();
@@ -307,6 +308,8 @@ namespace ps2x::iop::detail
             }
             if (iequals(call.library, "thsemap"))
             {
+                if (call.ordinal == 8u)
+                    runThreadsUntilSignaled(static_cast<int>(a0));
                 return kernel.dispatchSemaphoreImport(call.ordinal, cpu)
                            ? ImportDisposition::Handled
                            : ImportDisposition::Missing;
@@ -473,7 +476,10 @@ namespace ps2x::iop::detail
             CpuState *previous = activeCpu;
             activeCpu = &cpu;
             const uint64_t start = totalInstructions;
-            while (!cpu.stopped && !cpu.yielded && totalInstructions - start < instructionBudget)
+            const uint64_t stallStart = stallInstructions;
+            // Instructions the other threads ran while this call waited on a semaphore are not part of its budget.
+            const auto executed = [&] { return totalInstructions - start - (stallInstructions - stallStart); };
+            while (!cpu.stopped && !cpu.yielded && executed() < instructionBudget)
             {
                 if (!step(cpu))
                     break;
@@ -483,7 +489,27 @@ namespace ps2x::iop::detail
                     servicePendingGuestCallbacks();
             }
             activeCpu = previous;
-            return static_cast<uint32_t>(totalInstructions - start);
+            return static_cast<uint32_t>(executed());
+        }
+
+        // A synchronous guest call (an RPC server) has no thread of its own to park in WaitSema. On the real IOP it
+        // runs on a thread that sleeps while the others carry on, so run those until the semaphore is signalled.
+        void runThreadsUntilSignaled(int semaphoreId)
+        {
+            if (!kernel.waitWouldStall(semaphoreId))
+                return;
+            const uint64_t instructionsBefore = totalInstructions;
+            const uint64_t deadline = totalCycles + kSemaphoreStallCycles;
+            while (kernel.waitWouldStall(semaphoreId) && totalCycles < deadline)
+                runCycles(kDefaultSlice);
+            stallInstructions += totalInstructions - instructionsBefore;
+            if (kernel.waitWouldStall(semaphoreId))
+            {
+                std::ostringstream out;
+                out << "[IOP] WaitSema(" << semaphoreId << ") without a thread: no thread signalled it within "
+                    << kSemaphoreStallCycles << " cycles";
+                log(LogLevel::Warning, out.str());
+            }
         }
 
         uint32_t callFunction(uint32_t address,
@@ -838,6 +864,7 @@ namespace ps2x::iop::detail
         uint32_t moduleCursor = kModuleLoadBase;
         uint64_t totalCycles = 0;
         uint64_t totalInstructions = 0;
+        uint64_t stallInstructions = 0;
         uint64_t eeCycleCarry = 0;
         CpuState *activeCpu = nullptr;
         std::string lastError;
