@@ -2,6 +2,7 @@
 #include "runtime/gs/gs_cpu_backend.h"
 #include "ps2_log.h"
 #include "runtime/ps2_memory.h"
+#include <array>
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -38,6 +39,17 @@ namespace
         float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f, z0 = 1e30f, z1 = -1e30f;
     };
     std::map<std::string, FrameSumEntry> g_frameSum;
+    // PS2_GS_FRAMESUM=N[:K]: summarize the frames after presents N .. N+K-1, one block each (K defaults to 1).
+    bool frameSumWanted(uint32_t present)
+    {
+        static const uint32_t at = std::getenv("PS2_GS_FRAMESUM") ? std::atoi(std::getenv("PS2_GS_FRAMESUM")) : 0;
+        static const uint32_t count = []() {
+            const char *env = std::getenv("PS2_GS_FRAMESUM");
+            const char *colon = env ? std::strchr(env, ':') : nullptr;
+            return colon ? std::max(1, std::atoi(colon + 1)) : 1;
+        }();
+        return at && present >= at && present - at < count;
+    }
     static constexpr uint32_t kHostFrameWidth = 640u;
 
     GSPrimReg decodePrimRegister(uint64_t value)
@@ -602,13 +614,49 @@ void GS::latchHostPresentationFrame()
         }
     }
 
-    if (g_gsPresentCount.fetch_add(1) + 1 == (std::getenv("PS2_GS_FRAMESUM") ? (uint32_t)std::atoi(std::getenv("PS2_GS_FRAMESUM")) + 1 : 0))
+    const uint32_t presentIndex = g_gsPresentCount.fetch_add(1);
+    if (frameSumWanted(presentIndex))
     {
         std::lock_guard<std::mutex> lk(g_gsLogMutex);
-        std::fprintf(stderr, "[framesum] present %u: %zu setups\n", g_gsPresentCount.load() - 1, g_frameSum.size());
+        std::fprintf(stderr, "[framesum] present %u: %zu setups\n", presentIndex, g_frameSum.size());
         for (const auto &kv : g_frameSum)
             std::fprintf(stderr, "[framesum] %6u adc=%-6u %s  x=[%.1f,%.1f] y=[%.1f,%.1f] z=[%.0f,%.0f]\n", kv.second.count, kv.second.culled, kv.first.c_str(),
                          kv.second.x0, kv.second.x1, kv.second.y0, kv.second.y1, kv.second.z0, kv.second.z1);
+        g_frameSum.clear();
+    }
+    // PS2_GS_PRESENT_DUMP=N[:A[:K]]: every N-th presented frame (from present A, at most K of them), as the backend
+    // returned it (before the window scaling), goes to present_NNNNNN.ppm in the working directory, to compare pixel
+    // by pixel with a PCSX2 frame. N=1 gives consecutive frames.
+    {
+        static const auto dumpCfg = []() {
+            uint32_t v[3] = {0, 0, ~0u};
+            const char *s = std::getenv("PS2_GS_PRESENT_DUMP");
+            for (int k = 0; s && k < 3; ++k)
+            {
+                v[k] = std::strtoul(s, nullptr, 10);
+                s = std::strchr(s, ':');
+                if (s) ++s;
+            }
+            return std::array<uint32_t, 3>{v[0], v[1], v[2]};
+        }();
+        const uint32_t n = presentIndex + 1;
+        if (dumpCfg[0] && frame && n >= dumpCfg[1] && (n - dumpCfg[1]) / dumpCfg[0] < dumpCfg[2] && n % dumpCfg[0] == 0)
+        {
+            char name[64];
+            std::snprintf(name, sizeof name, "present_%06u.ppm", n);
+            if (FILE *f = std::fopen(name, "wb"))
+            {
+                std::fprintf(f, "P6\n%u %u\n255\n", frame.width, frame.height);
+                for (uint32_t y = 0; y < frame.height; ++y)  // rows are kHostFrameWidth pixels apart
+                    for (uint32_t x = 0; x < frame.width; ++x)
+                    {
+                        const size_t i = (size_t(y) * kHostFrameWidth + x) * 4u;
+                        if (i + 3 <= frame.pixels.size())
+                            std::fwrite(&frame.pixels[i], 1, 3, f);
+                    }
+                std::fclose(f);
+            }
+        }
     }
     const bool hasFrame = static_cast<bool>(frame);
     const uint32_t displayFbp = frame.displayFbp;
@@ -1652,11 +1700,10 @@ void GS::vertexKick(bool drawing)
     if (m_vtxCount < needed)
         return;
 
-    // PS2_GS_FRAMESUM=N: per-setup primitive count (drawn and ADC-suppressed) and bounding box for the frame after
-    // the N-th present (same fields as games/gow2/scripts/gsdump.py draws, to diff against a PCSX2 dump).
+    // PS2_GS_FRAMESUM=N[:K]: per-setup primitive count (drawn and ADC-suppressed) and bounding box for the frames after
+    // presents N .. N+K-1 (same fields as games/gow2/scripts/gsdump.py draws, to diff against a PCSX2 dump).
     auto frameSumRecord = [&](bool drawn, const GSPrimitiveBatch *batch) {
-        static const uint32_t frameSumAt = std::getenv("PS2_GS_FRAMESUM") ? std::atoi(std::getenv("PS2_GS_FRAMESUM")) : 0;
-        if (!frameSumAt || g_gsPresentCount.load() != frameSumAt)
+        if (!frameSumWanted(g_gsPresentCount.load()))
             return;
         const GSContext &c = m_ctx[m_prim.ctxt ? 1 : 0];
         char key[256];

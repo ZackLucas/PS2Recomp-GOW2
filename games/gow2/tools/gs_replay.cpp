@@ -8,6 +8,7 @@
 //
 // usage: gow2_gs_replay dump.gs[.zst] [--ref ref.rgba W H] [--out prefix]
 //                       [--vram-offset N | --scan-vram-offset] [--frames N]
+// --out writes <prefix>N.ppm per frame and <prefix>init.ppm, the frame PCSX2 left in VRAM when the dump started.
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_memory.h"
 
@@ -271,6 +272,14 @@ int main(int argc, char **argv)
     {
         fprintf(stderr, "pass --vram-offset N (use --scan-vram-offset to find it)\n");
         return 1;
+    }
+
+    // The frame PCSX2 itself left in VRAM when the dump started.
+    if (!outPrefix.empty())
+    {
+        std::vector<uint8_t> px; uint32_t w = 0, h = 0;
+        if (presentInitial(d, static_cast<size_t>(vramOffset), vram, priv, px, w, h))
+            writePpm(outPrefix + "init.ppm", px, w, h);
     }
 
     // Replay.
