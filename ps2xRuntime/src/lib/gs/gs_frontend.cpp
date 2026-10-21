@@ -66,7 +66,7 @@ namespace
     struct DrawSeqRun
     {
         uint64_t key[8]{};
-        uint32_t verts = 0, adc = 0;
+        uint32_t verts = 0, adc = 0, cbp = 0;  // cbp: CLUT of the first vertex (texture slots are reused with other CLUTs)
         float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
     };
     DrawSeqRun g_drawSeq;
@@ -79,10 +79,10 @@ namespace
             const uint64_t pr = r.key[0];
             std::fprintf(stderr,
                          "[drawseq] #%3u prim=%03llx(t%llu tme%llu abe%llu fst%llu ctx%llu) fbp=%llu fbw=%llu fbmsk=%08llx tbp=%lld "
-                         "alpha=%010llx test=%llx zbp=%llu verts=%u adc=%u x=%.1f..%.1f y=%.1f..%.1f\n",
+                         "cbp=%u alpha=%010llx test=%llx zbp=%llu verts=%u adc=%u x=%.1f..%.1f y=%.1f..%.1f\n",
                          g_drawSeqIndex, (unsigned long long)pr, (unsigned long long)(pr & 7), (unsigned long long)((pr >> 4) & 1),
                          (unsigned long long)((pr >> 6) & 1), (unsigned long long)((pr >> 8) & 1), (unsigned long long)((pr >> 9) & 1),
-                         (unsigned long long)r.key[1], (unsigned long long)r.key[2], (unsigned long long)r.key[3], (long long)r.key[4],
+                         (unsigned long long)r.key[1], (unsigned long long)r.key[2], (unsigned long long)r.key[3], (long long)r.key[4], r.cbp,
                          (unsigned long long)r.key[5], (unsigned long long)r.key[6], (unsigned long long)r.key[7], r.verts, r.adc, r.x0, r.x1,
                          r.y0, r.y1);
             ++g_drawSeqIndex;
@@ -1722,6 +1722,7 @@ void GS::vertexKick(bool drawing)
         {
             drawSeqFlush();
             std::memcpy(g_drawSeq.key, key, sizeof key);
+            g_drawSeq.cbp = m_prim.tme ? c.tex0.cbp : 0u;
         }
         DrawSeqRun &r = g_drawSeq;
         ++r.verts;
