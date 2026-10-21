@@ -1681,8 +1681,11 @@ void register_ps2_gs_tests()
                      "single-circuit presentation should normalize the last row alpha");
         });
 
-        tc.Run("latched host presentation line-doubles interlaced field output", [](TestCase &t)
+        tc.Run("latched host presentation shows every line of an interlaced FFMD=0 frame", [](TestCase &t)
         {
+            // Field mode shows alternate lines of a full-height frame on each VSync. The host shows the whole frame on
+            // every present: one field with doubled lines, picked by the VSync parity, made the picture jump a line
+            // on every present (A25).
             std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
             GSRegisters regs{};
             regs.pmode = 0x0001ull;
@@ -1707,37 +1710,35 @@ void register_ps2_gs_tests()
             writeReferencePSMCT32Pixel(vram, 0u, 10u, 0u, 2u, kLine2);
             writeReferencePSMCT32Pixel(vram, 0u, 10u, 0u, 3u, kLine3);
 
-            gs.latchHostPresentationFrame();
-
-            std::vector<uint8_t> latchedFrame;
-            uint32_t latchedWidth = 0u;
-            uint32_t latchedHeight = 0u;
-            t.IsTrue(gs.copyLatchedHostPresentationFrame(latchedFrame, latchedWidth, latchedHeight),
-                     "interlaced field presentation should produce a host frame");
-            t.Equals(latchedWidth, 640u,
-                     "field presentation should preserve display width");
-            t.Equals(latchedHeight, 448u,
-                     "field presentation should preserve display height");
-
-            auto pixelAtRow = [&](uint32_t row) -> uint32_t
+            for (uint64_t tick : {0ull, 1ull})
             {
-                const size_t off = static_cast<size_t>(row) * 640u * 4u;
-                return static_cast<uint32_t>(latchedFrame[off + 0u]) |
-                       (static_cast<uint32_t>(latchedFrame[off + 1u]) << 8) |
-                       (static_cast<uint32_t>(latchedFrame[off + 2u]) << 16);
-            };
+                regs.vsyncTick.store(tick);
+                gs.latchHostPresentationFrame();
 
-            const uint32_t row0 = pixelAtRow(0u);
-            const uint32_t row1 = pixelAtRow(1u);
-            const uint32_t row2 = pixelAtRow(2u);
-            const uint32_t row3 = pixelAtRow(3u);
+                std::vector<uint8_t> latchedFrame;
+                uint32_t latchedWidth = 0u;
+                uint32_t latchedHeight = 0u;
+                t.IsTrue(gs.copyLatchedHostPresentationFrame(latchedFrame, latchedWidth, latchedHeight),
+                         "interlaced field presentation should produce a host frame");
+                t.Equals(latchedWidth, 640u,
+                         "field presentation should preserve display width");
+                t.Equals(latchedHeight, 448u,
+                         "field presentation should preserve display height");
 
-            t.Equals(row0, row1,
-                     "field presentation should duplicate the active field into the next scanline");
-            t.Equals(row2, row3,
-                     "field presentation should duplicate later field scanlines as well");
-            t.IsTrue(row0 != row2,
-                     "field presentation should still preserve different source content across field rows");
+                auto pixelAtRow = [&](uint32_t row) -> uint32_t
+                {
+                    const size_t off = static_cast<size_t>(row) * 640u * 4u;
+                    return static_cast<uint32_t>(latchedFrame[off + 0u]) |
+                           (static_cast<uint32_t>(latchedFrame[off + 1u]) << 8) |
+                           (static_cast<uint32_t>(latchedFrame[off + 2u]) << 16);
+                };
+
+                const std::string parity = tick ? " (odd VSync)" : " (even VSync)";
+                t.Equals(pixelAtRow(0u), kLine0, "row 0 should come from frame line 0" + parity);
+                t.Equals(pixelAtRow(1u), kLine1, "row 1 should come from frame line 1" + parity);
+                t.Equals(pixelAtRow(2u), kLine2, "row 2 should come from frame line 2" + parity);
+                t.Equals(pixelAtRow(3u), kLine3, "row 3 should come from frame line 3" + parity);
+            }
         });
 
         tc.Run("GIF PACKED A+D writes DISPFB1 and DISPLAY1 privileged registers", [](TestCase &t)

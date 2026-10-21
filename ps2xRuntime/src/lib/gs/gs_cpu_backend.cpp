@@ -1914,15 +1914,18 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     PresentationFrame result{};
     const GSPmodeState pmode = decodePmode(request.pmode);
     const GSSmode2State smode2 = decodeSMode2(request.smode2);
-    // PS2_GS_PRESENT_FIELD (A25 probe): 0 or 1 pins the field the present shows in interlaced FFMD=0 mode (by
-    // default it follows the VSync parity); "full" shows every line of the frame instead of one field.
+    // Interlaced FFMD=0 (field mode) shows alternate lines of a full-height frame on each VSync. The host shows the
+    // whole frame (both fields, with the 2 circuits already merged): one field with doubled lines, picked by the
+    // VSync parity, moved the picture up and down a line on every present (A25).
+    // PS2_GS_PRESENT_FIELD (probe): 0 or 1 shows only that field, "vsync" the field of the VSync parity (the old
+    // behaviour), "full" the whole frame (the default).
     static const int forcedField = []() {
         const char *s = std::getenv("PS2_GS_PRESENT_FIELD");
-        if (!s) return -1;
-        return std::strcmp(s, "full") == 0 ? 2 : std::atoi(s) & 1;
+        if (!s || std::strcmp(s, "full") == 0) return -1;
+        return std::strcmp(s, "vsync") == 0 ? 2 : std::atoi(s) & 1;
     }();
-    const bool fieldMode = smode2.interlaced && !smode2.frameMode && forcedField != 2;
-    const bool oddField = forcedField >= 0 ? forcedField == 1 : (request.vsyncTick & 1ull) != 0ull;
+    const bool fieldMode = smode2.interlaced && !smode2.frameMode && forcedField >= 0;
+    const bool oddField = forcedField == 2 ? (request.vsyncTick & 1ull) != 0ull : forcedField == 1;
     const GSFrameReg displayFrame1 = decodeDisplayFrame(request.dispfb1);
     const GSFrameReg displayFrame2 = decodeDisplayFrame(request.dispfb2);
     const GSDisplayReadOrigin origin1 = decodeDisplayReadOrigin(request.dispfb1);
