@@ -1914,8 +1914,15 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     PresentationFrame result{};
     const GSPmodeState pmode = decodePmode(request.pmode);
     const GSSmode2State smode2 = decodeSMode2(request.smode2);
-    const bool fieldMode = smode2.interlaced && !smode2.frameMode;
-    const bool oddField = (request.vsyncTick & 1ull) != 0ull;
+    // PS2_GS_PRESENT_FIELD (A25 probe): 0 or 1 pins the field the present shows in interlaced FFMD=0 mode (by
+    // default it follows the VSync parity); "full" shows every line of the frame instead of one field.
+    static const int forcedField = []() {
+        const char *s = std::getenv("PS2_GS_PRESENT_FIELD");
+        if (!s) return -1;
+        return std::strcmp(s, "full") == 0 ? 2 : std::atoi(s) & 1;
+    }();
+    const bool fieldMode = smode2.interlaced && !smode2.frameMode && forcedField != 2;
+    const bool oddField = forcedField >= 0 ? forcedField == 1 : (request.vsyncTick & 1ull) != 0ull;
     const GSFrameReg displayFrame1 = decodeDisplayFrame(request.dispfb1);
     const GSFrameReg displayFrame2 = decodeDisplayFrame(request.dispfb2);
     const GSDisplayReadOrigin origin1 = decodeDisplayReadOrigin(request.dispfb1);

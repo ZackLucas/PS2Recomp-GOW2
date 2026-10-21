@@ -690,6 +690,12 @@ void GS::latchHostPresentationFrame()
         {
             char name[64];
             std::snprintf(name, sizeof name, "present_%06u.ppm", n);
+            std::fprintf(stderr, "[present] %s tick=%llu csr=%llx pmode=%llx smode2=%llx dispfb1=%llx display1=%llx "
+                         "dispfb2=%llx display2=%llx\n", name, (unsigned long long)request.vsyncTick,
+                         (unsigned long long)m_privRegs->csr.load(), (unsigned long long)request.pmode,
+                         (unsigned long long)request.smode2, (unsigned long long)request.dispfb1,
+                         (unsigned long long)request.display1, (unsigned long long)request.dispfb2,
+                         (unsigned long long)request.display2);
             if (FILE *f = std::fopen(name, "wb"))
             {
                 std::fprintf(f, "P6\n%u %u\n255\n", frame.width, frame.height);
