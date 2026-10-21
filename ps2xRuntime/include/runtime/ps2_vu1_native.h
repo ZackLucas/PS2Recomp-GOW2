@@ -202,7 +202,7 @@ namespace vu1n
         return r;
     }
     inline uint64_t rdEfuRes(uint64_t r, const State &s) { return s.efuResourceReady > r ? s.efuResourceReady : r; }
-    inline void begin(State &s, uint64_t ready)
+    VU1N_INLINE void begin(State &s, uint64_t ready)
     {
         if (ready > s.cyc)
             s.cyc = ready;
@@ -384,7 +384,7 @@ namespace vu1n
             writeVf(s, dstReg, r, dest);
     }
 
-    inline void fmac(State &s, Kind k, bool toAcc, int dstReg, uint8_t dest, const float *a, const float *b)
+    VU1N_INLINE void fmac(State &s, Kind k, bool toAcc, int dstReg, uint8_t dest, const float *a, const float *b)
     {
         if (dest == 0u)
             return;
@@ -406,28 +406,28 @@ namespace vu1n
     }
 
     // ---- Binary FMAC families: Kind x {vt, bc, q, i}, to vf[fd] or to ACC ----
-    inline void op_vt(State &s, Kind k, bool toAcc, int fd, int fs, int ft, uint8_t dest)
+    VU1N_INLINE void op_vt(State &s, Kind k, bool toAcc, int fd, int fs, int ft, uint8_t dest)
     {
         float a[4], b[4];
         norm4(s.vf[fs], a);
         norm4(s.vf[ft], b);
         fmac(s, k, toAcc, fd, dest, a, b);
     }
-    inline void op_bc(State &s, Kind k, bool toAcc, int fd, int fs, int ft, int bc, uint8_t dest)
+    VU1N_INLINE void op_bc(State &s, Kind k, bool toAcc, int fd, int fs, int ft, int bc, uint8_t dest)
     {
         float a[4], b[4];
         norm4(s.vf[fs], a);
         bcast(s.vf[ft][bc], b);
         fmac(s, k, toAcc, fd, dest, a, b);
     }
-    inline void op_q(State &s, Kind k, bool toAcc, int fd, int fs, uint8_t dest)
+    VU1N_INLINE void op_q(State &s, Kind k, bool toAcc, int fd, int fs, uint8_t dest)
     {
         float a[4], b[4];
         norm4(s.vf[fs], a);
         bcast(s.q, b);
         fmac(s, k, toAcc, fd, dest, a, b);
     }
-    inline void op_i(State &s, Kind k, bool toAcc, int fd, int fs, uint8_t dest)
+    VU1N_INLINE void op_i(State &s, Kind k, bool toAcc, int fd, int fs, uint8_t dest)
     {
         float a[4], b[4];
         norm4(s.vf[fs], a);
@@ -435,7 +435,7 @@ namespace vu1n
         fmac(s, k, toAcc, fd, dest, a, b);
     }
     // OPMSUB / OPMULA: cross-product halves.
-    inline void op_cross(State &s, Kind k, bool toAcc, int fd, int fs, int ft, uint8_t dest)
+    VU1N_INLINE void op_cross(State &s, Kind k, bool toAcc, int fd, int fs, int ft, uint8_t dest)
     {
         float vs[4], vt[4], a[4], b[4];
         norm4(s.vf[fs], vs);
