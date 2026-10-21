@@ -50,9 +50,9 @@ readback UB fix and optional DMA hash trace; `final` checks the final build.
 Generated C++ for the native VU1 plugin, configured with `-DGOW2_VU1_GEN_DIR=<dir>`
 (see `tools/CMakeLists.txt`). It is derived from game code, so it stays out of git.
 The set measured in item 25 (menu, 10.7 VSync/s) is
-`~/gow2/item25-2026-10-21/vu1gen-merged/`: 193 `seg_*.cpp` files and
+`~/gow2/vu1gen/` (moved there in item 29, 2026-10-21): 193 `seg_*.cpp` files and
 `vu1_registry.cpp`, 5.4 MB. Adopted set (decision of 2026-10-21): these 193 files, not the 1,134 generator outputs.
-Proposed home, not moved yet: `~/gow2/vu1gen/`.
+The previous 183-segment copy was kept as `~/gow2/vu1gen-antigo/`.
 
 - Inputs for `gow2_vu1_gen <dir> image.bin ...`: `pcsx2-ref/vu1progs/vu1_*.bin`
   (142), `pcsx2-ref/vu1progs_fix/*.bin` (55) and the 10 images captured in item 25
