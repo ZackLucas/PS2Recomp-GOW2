@@ -4,8 +4,11 @@
 //   * operands: denormal -> signed zero, Inf/NaN -> +-Fmax (largest finite float)
 //   * results:  Inf -> +-Fmax (overflow), denormal -> signed zero (underflow)
 //   * SQRT.S of a negative number uses its absolute value; DIV by zero gives +-Fmax (sign = xor of the signs)
-// Flags (FCR31 O/U/I/D and the sticky ones, VU0 MAC/status) are not tracked yet. Rounding stays round-to-nearest
-// (the EE rounds toward zero): differences are in the last bit only.
+// Flags (FCR31 O/U/I/D and the sticky ones, VU0 MAC/status) are not tracked yet.
+// Rounding (compile-time PS2X_EE_FP_ROUND): 0 (default) rounds ADD/SUB/MUL to nearest and CVT.W.S to nearest;
+// 1 does the same but counts the results that toward-zero rounding would change (ps2x_fp_round_stats, printed with
+// PS2_PERF_STATS); 2 rounds ADD/SUB/MUL and CVT.S.W toward zero and truncates CVT.W.S, like PCSX2 with its default
+// FPU.Roundmode = 3 (Chop). DIV and SQRT stay round-to-nearest (PCSX2's FPUDiv.Roundmode = 0).
 // Rules cross-checked against PCSX2's FPU.cpp behaviour (read to understand, reimplemented here).
 #include <cmath>
 #include <cstdint>
@@ -14,6 +17,12 @@
 #define PS2X_FORCE_INLINE inline __attribute__((always_inline))
 
 extern "C" void ps2x_fp_report(const char *kind, const float *a, const float *b, const float *r, int lanes);
+
+#ifndef PS2X_EE_FP_ROUND
+#define PS2X_EE_FP_ROUND 0
+#endif
+// [op count, results that differ] for: 0 add/sub, 1 mul, 2 CVT.W.S, 3 CVT.S.W (filled only when PS2X_EE_FP_ROUND == 1)
+extern "C" uint64_t ps2x_fp_round_stats[4][2];
 
 namespace ps2x_fp
 {
@@ -53,9 +62,85 @@ namespace ps2x_fp
         return _mm_castsi128_ps(r);
     }
 
-    PS2X_FORCE_INLINE float add(float a, float b) { return norm(norm(a) + norm(b)); }
-    PS2X_FORCE_INLINE float sub(float a, float b) { return norm(norm(a) - norm(b)); }
-    PS2X_FORCE_INLINE float mul(float a, float b) { return norm(norm(a) * norm(b)); }
+    // Exact value hi + lo (|lo| below half an ulp of hi) rounded toward zero to float.
+    PS2X_FORCE_INLINE float towardZero(double hi, double lo)
+    {
+        float r = static_cast<float>(hi);
+        const double rd = static_cast<double>(r);
+        if (std::fabs(rd) > std::fabs(hi) || (rd == hi && lo != 0.0 && ((lo < 0.0) != (hi < 0.0))))
+            r = std::nextafter(r, 0.0f);
+        return r;
+    }
+    // a + b as hi + lo (TwoSum): hi is the double rounding of the sum, lo the exact error.
+    PS2X_FORCE_INLINE float addTowardZero(float a, float b)
+    {
+        const double x = a, y = b, hi = x + y, bv = hi - x;
+        return towardZero(hi, (x - (hi - bv)) + (y - bv));
+    }
+    // The product of two floats is exact in double.
+    PS2X_FORCE_INLINE float mulTowardZero(float a, float b) { return towardZero(static_cast<double>(a) * b, 0.0); }
+
+    PS2X_FORCE_INLINE void countRound(int kind, bool differs)
+    {
+        ++ps2x_fp_round_stats[kind][0];
+        ps2x_fp_round_stats[kind][1] += differs ? 1u : 0u;
+    }
+    PS2X_FORCE_INLINE float addRounded(float a, float b)
+    {
+#if PS2X_EE_FP_ROUND == 2
+        return addTowardZero(a, b);
+#else
+        const float r = a + b;
+#if PS2X_EE_FP_ROUND == 1
+        countRound(0, bitsOf(r) != bitsOf(addTowardZero(a, b)));
+#endif
+        return r;
+#endif
+    }
+    PS2X_FORCE_INLINE float mulRounded(float a, float b)
+    {
+#if PS2X_EE_FP_ROUND == 2
+        return mulTowardZero(a, b);
+#else
+        const float r = a * b;
+#if PS2X_EE_FP_ROUND == 1
+        countRound(1, bitsOf(r) != bitsOf(mulTowardZero(a, b)));
+#endif
+        return r;
+#endif
+    }
+
+    PS2X_FORCE_INLINE float add(float a, float b) { return norm(addRounded(norm(a), norm(b))); }
+    PS2X_FORCE_INLINE float sub(float a, float b) { return norm(addRounded(norm(a), -norm(b))); }
+    PS2X_FORCE_INLINE float mul(float a, float b) { return norm(mulRounded(norm(a), norm(b))); }
+    // CVT.W.S: PCSX2 truncates ((s32) cast) and saturates from 2^30 up (exponent field above 0x4E8).
+    PS2X_FORCE_INLINE int32_t cvtWS(float a)
+    {
+        const uint32_t ab = bitsOf(a);
+        const int32_t trunc = (ab & 0x7F800000u) <= 0x4E800000u ? static_cast<int32_t>(a)
+                                                                 : ((ab & 0x80000000u) ? INT32_MIN : INT32_MAX);
+#if PS2X_EE_FP_ROUND == 2
+        return trunc;
+#else
+        const int32_t r = static_cast<int32_t>(nearbyintf(a));
+#if PS2X_EE_FP_ROUND == 1
+        countRound(2, r != trunc);
+#endif
+        return r;
+#endif
+    }
+    PS2X_FORCE_INLINE float cvtSW(int32_t v)
+    {
+#if PS2X_EE_FP_ROUND == 2
+        return towardZero(static_cast<double>(v), 0.0);
+#else
+        const float r = static_cast<float>(v);
+#if PS2X_EE_FP_ROUND == 1
+        countRound(3, bitsOf(r) != bitsOf(towardZero(static_cast<double>(v), 0.0)));
+#endif
+        return r;
+#endif
+    }
     PS2X_FORCE_INLINE float div(float a, float b)
     {
         const uint32_t bb = bitsOf(b);
@@ -77,9 +162,25 @@ namespace ps2x_fp
             return floatOf((ab & 0x80000000u) | 0x7F7FFFFFu);
         return norm(1.0f / std::sqrt(std::fabs(norm(a))));
     }
+#if PS2X_EE_FP_ROUND == 0
     PS2X_FORCE_INLINE __m128 vadd(__m128 a, __m128 b) { return norm4(_mm_add_ps(norm4(a), norm4(b))); }
     PS2X_FORCE_INLINE __m128 vsub(__m128 a, __m128 b) { return norm4(_mm_sub_ps(norm4(a), norm4(b))); }
     PS2X_FORCE_INLINE __m128 vmul(__m128 a, __m128 b) { return norm4(_mm_mul_ps(norm4(a), norm4(b))); }
+#else
+    // VU0 macro mode lane by lane, through the same rounding as the FPU (PCSX2's VU0.Roundmode = 3 is also Chop).
+    PS2X_FORCE_INLINE __m128 lanes(__m128 a, __m128 b, float (*op)(float, float))
+    {
+        alignas(16) float fa[4], fb[4], fr[4];
+        _mm_store_ps(fa, norm4(a));
+        _mm_store_ps(fb, norm4(b));
+        for (int i = 0; i < 4; ++i)
+            fr[i] = op(fa[i], fb[i]);
+        return norm4(_mm_load_ps(fr));
+    }
+    PS2X_FORCE_INLINE __m128 vadd(__m128 a, __m128 b) { return lanes(a, b, addRounded); }
+    PS2X_FORCE_INLINE __m128 vsub(__m128 a, __m128 b) { return lanes(a, _mm_xor_ps(b, _mm_set1_ps(-0.0f)), addRounded); }
+    PS2X_FORCE_INLINE __m128 vmul(__m128 a, __m128 b) { return lanes(a, b, mulRounded); }
+#endif
     PS2X_FORCE_INLINE __m128 vdiv(__m128 a, __m128 b)
     {
         alignas(16) float fa[4], fb[4], fr[4];

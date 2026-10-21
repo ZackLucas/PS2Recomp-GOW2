@@ -58,6 +58,8 @@ extern "C" __attribute__((noinline, cold)) void ps2x_fp_report(const char *kind,
     std::fprintf(stderr, "\n");
 }
 
+extern "C" uint64_t ps2x_fp_round_stats[4][2] = {};
+
 void ps2WatchHit(uint32_t guestAddr, uint32_t size, uint64_t valueLo, uint64_t valueHi, const char *op, const R5900Context *ctx)
 {
     // PS2_WATCH_WORD=<hex>: only report stores where one of the 32-bit words equals it
@@ -2873,6 +2875,15 @@ void PS2Runtime::run()
                     std::fprintf(stderr, "[perf] vsync/s=%.1f flips/s=%.1f\n",
                                  static_cast<double>(vsync - windowVsync) / seconds, flips / seconds);
                     m_vu1Native.reportWindow(stderr, vsync - windowVsync);
+#if PS2X_EE_FP_ROUND == 1
+                    // Totals since boot: [ops, results that toward-zero rounding would change]
+                    std::fprintf(stderr, "[ee-fp-round] vsync=%llu addsub=%llu/%llu mul=%llu/%llu cvt.w.s=%llu/%llu cvt.s.w=%llu/%llu\n",
+                                 static_cast<unsigned long long>(vsync),
+                                 static_cast<unsigned long long>(ps2x_fp_round_stats[0][1]), static_cast<unsigned long long>(ps2x_fp_round_stats[0][0]),
+                                 static_cast<unsigned long long>(ps2x_fp_round_stats[1][1]), static_cast<unsigned long long>(ps2x_fp_round_stats[1][0]),
+                                 static_cast<unsigned long long>(ps2x_fp_round_stats[2][1]), static_cast<unsigned long long>(ps2x_fp_round_stats[2][0]),
+                                 static_cast<unsigned long long>(ps2x_fp_round_stats[3][1]), static_cast<unsigned long long>(ps2x_fp_round_stats[3][0]));
+#endif
                     windowStart = now;
                     windowVsync = vsync;
                     flips = 0;
