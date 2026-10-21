@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "iop_sio2.h"
+#include "spu2.h"
 
 namespace ps2x::iop::detail
 {
@@ -83,6 +84,7 @@ namespace ps2x::iop::detail
         [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
         void setSio2PadReader(IopSio2::PadReader reader) { m_sio2.setPadReader(std::move(reader)); }
         [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
+        [[nodiscard]] Spu2 &spu2() noexcept { return m_spu2; }
 
         [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
 
@@ -103,5 +105,6 @@ namespace ps2x::iop::detail
         uint32_t m_interruptControl = 1;
         std::deque<DmaStart> m_pendingInterrupts; // DMA completions and SIO2 transfers
         mutable IopSio2 m_sio2;
+        Spu2 m_spu2;
     };
 }

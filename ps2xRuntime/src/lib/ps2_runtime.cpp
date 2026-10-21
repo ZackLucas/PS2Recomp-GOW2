@@ -32,6 +32,51 @@
 #include <cstdio>
 #include <cstdlib>
 
+#if !defined(PLATFORM_VITA)
+namespace
+{
+    std::atomic<ps2x::iop::IopSubsystem *> g_spu2AudioSource{nullptr};
+    AudioStream g_spu2Stream{};
+    bool g_spu2StreamActive = false;
+
+    void spu2AudioCallback(void *buffer, unsigned int frames)
+    {
+        auto *output = static_cast<int16_t *>(buffer);
+        size_t produced = 0u;
+        if (auto *source = g_spu2AudioSource.load(std::memory_order_acquire))
+            produced = source->drainAudio(output, frames, 4800u);
+        std::fill(output + produced * 2u, output + static_cast<size_t>(frames) * 2u, int16_t{0});
+    }
+
+    void startSpu2Audio(ps2x::iop::IopSubsystem *source)
+    {
+        const char *setting = std::getenv("PS2_SPU2_AUDIO");
+        if (g_spu2StreamActive || !source || !IsAudioDeviceReady() || (setting && setting[0] == '0'))
+            return;
+        SetAudioStreamBufferSizeDefault(1024);
+        g_spu2Stream = LoadAudioStream(48000u, 16u, 2u);
+        SetAudioStreamBufferSizeDefault(0);
+        if (!IsAudioStreamValid(g_spu2Stream))
+            return;
+        g_spu2AudioSource.store(source, std::memory_order_release);
+        SetAudioStreamCallback(g_spu2Stream, spu2AudioCallback);
+        PlayAudioStream(g_spu2Stream);
+        g_spu2StreamActive = true;
+        std::cerr << "[SPU2] stereo 48 kHz output active" << std::endl;
+    }
+
+    void stopSpu2Audio()
+    {
+        if (!g_spu2StreamActive)
+            return;
+        StopAudioStream(g_spu2Stream);
+        UnloadAudioStream(g_spu2Stream);
+        g_spu2AudioSource.store(nullptr, std::memory_order_release);
+        g_spu2StreamActive = false;
+    }
+}
+#endif
+
 
 // First operations that create NaN/Inf from finite inputs (see ps2_runtime_macros.h). Prints the first 40, then one
 // line per 100000 further occurrences; `site` is the address inside the recompiled function (subtract the address of
@@ -681,6 +726,9 @@ PS2Runtime::~PS2Runtime()
     try
     {
         requestStop();
+#if !defined(PLATFORM_VITA)
+        stopSpu2Audio();
+#endif
         m_iopSubsystem.reset();
         m_iopHost.reset();
 #if defined(PLATFORM_VITA)
@@ -1007,6 +1055,7 @@ bool PS2Runtime::initialize(const char *title)
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
+        startSpu2Audio(m_iopSubsystem.get());
 #endif
         SetTargetFPS(60);
         if (m_debugUiInitCallback)

@@ -147,6 +147,7 @@ namespace ps2x::iop::detail
             activeCpu = nullptr;
             lastError.clear();
             servicingDmaInterrupts = false;
+            servicingSpu2Interrupt = false;
             servicingGuestCallbacks = false;
             callDepth = 0u;
             secrMcCommandHandler = {};
@@ -623,6 +624,25 @@ namespace ps2x::iop::detail
             servicingGuestCallbacks = false;
         }
 
+        void serviceSpu2()
+        {
+            Spu2 &spu = memory.spu2();
+            spu.advanceTo(totalCycles);
+            if (servicingSpu2Interrupt || !spu.takeInterrupt())
+                return;
+            servicingSpu2Interrupt = true;
+            try
+            {
+                (void)intrman.dispatchInterrupt(Spu2::IopInterrupt, *this);
+            }
+            catch (...)
+            {
+                servicingSpu2Interrupt = false;
+                throw;
+            }
+            servicingSpu2Interrupt = false;
+        }
+
         void runCycles(uint64_t cycles) noexcept
         {
             try
@@ -630,6 +650,7 @@ namespace ps2x::iop::detail
                 const uint64_t target = totalCycles + cycles;
                 while (totalCycles < target)
                 {
+                    serviceSpu2();
                     servicePendingDmaInterrupts();
                     servicePendingGuestCallbacks();
                     timrman.serviceDue(totalCycles, *this);
@@ -651,6 +672,7 @@ namespace ps2x::iop::detail
                     if (totalCycles == before)
                         ++totalCycles;
                 }
+                serviceSpu2();
             }
             catch (...)
             {
@@ -820,6 +842,7 @@ namespace ps2x::iop::detail
         CpuState *activeCpu = nullptr;
         std::string lastError;
         bool servicingDmaInterrupts = false;
+        bool servicingSpu2Interrupt = false;
         bool servicingGuestCallbacks = false;
         uint32_t callDepth = 0u;
         GuestCallback secrMcCommandHandler;
@@ -925,6 +948,11 @@ namespace ps2x::iop::detail
             return false;
         const uint32_t physical = IopMemory::physicalAddress(address);
         return physical <= IopMemory::RamSize && size <= IopMemory::RamSize - physical;
+    }
+
+    size_t IopEmulator::drainAudio(int16_t *stereo, size_t maxFrames, size_t maxLatencyFrames)
+    {
+        return m_impl->memory.spu2().drainOutput(stereo, maxFrames, maxLatencyFrames);
     }
 
     uint64_t IopEmulator::cycles() const noexcept

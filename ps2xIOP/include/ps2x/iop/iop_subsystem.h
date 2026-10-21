@@ -42,6 +42,8 @@ namespace ps2x::iop
         [[nodiscard]] bool isMemoryRange(uint32_t address, size_t size) const;
 
         [[nodiscard]] DebugSnapshot debugSnapshot() const;
+        // Interleaved stereo PCM at 48 kHz. Safe for the host audio consumer thread.
+        size_t drainAudio(int16_t *stereo, size_t maxFrames, size_t maxLatencyFrames = SIZE_MAX);
 
     private:
         class Impl;

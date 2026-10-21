@@ -32,7 +32,20 @@ Sizes measured on 2026-10-20.
 
 `inj/clean_list.txt`, `inj/sane_list.txt` (empty) and `inj/ssbatch.log`: purpose not recorded.
 
-## Not catalogued (probably regenerable, kept for now)
+## SPU2 audio (2026-10-21)
+
+Outside `pcsx2-ref/`, under the work directory: `item21-2026-10-21/`.
+Open these only for audio validation. `2026-10-21-spu2.pcm` and
+`2026-10-21-final.pcm` are bounded native SPU2 output captures (s16le, 48 kHz,
+stereo); matching `.log` files contain bounded NAX/DMA traces and driver errors.
+Read them with `scripts/spu2_capture_summary.py PCM --log LOG --json SUMMARY`.
+`--wav PATH --seconds 8` exports a listening excerpt at the original gain/rate,
+trimming initial silence. `2026-10-21-menu-spu2.wav` is the review excerpt.
+The small curated JSON is in the vault; audio, screenshots (`frame_*.png`) and
+raw logs stay outside git. The longer capture predates only the final volume
+readback UB fix and optional DMA hash trace; `final` checks the final build.
+
+## Other uncatalogued data (probably regenerable, kept for now)
 
 `logs/` (1.6 GB), `run8.log` (161 MB), `shots/**/ps2_log.txt`, `output_v2` … `output_v8`
 (141 MB each), `pcsx2-ref/bis/` (1.2 GB) and `pcsx2-ref/syn/` (249 MB).

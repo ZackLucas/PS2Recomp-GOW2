@@ -37,6 +37,7 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool isMemoryRange(uint32_t address, size_t size) const;
 
         [[nodiscard]] uint64_t cycles() const noexcept;
+        size_t drainAudio(int16_t *stereo, size_t maxFrames, size_t maxLatencyFrames);
         [[nodiscard]] uint64_t instructions() const noexcept;
         [[nodiscard]] uint32_t loadedModuleCount() const noexcept;
         [[nodiscard]] uint32_t threadCount() const noexcept;

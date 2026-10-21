@@ -39,6 +39,7 @@ namespace ps2x::iop::detail
         m_interruptControl = 1;
         m_pendingInterrupts.clear();
         m_sio2.reset();
+        m_spu2.reset();
     }
 
     uint32_t IopMemory::physicalAddress(uint32_t address) noexcept
@@ -107,6 +108,15 @@ namespace ps2x::iop::detail
             m_scratch[phys - ScratchBase] = value;
             return;
         }
+        if (Spu2::contains(phys))
+        {
+            const uint32_t half = phys & ~1u;
+            const uint32_t shift = (phys & 1u) * 8u;
+            const uint16_t current = m_spu2.read16(half);
+            m_spu2.write16(half, static_cast<uint16_t>((current & ~(0xFFu << shift)) |
+                                                     (static_cast<uint32_t>(value) << shift)));
+            return;
+        }
         const uint32_t aligned = phys & ~3u;
         uint32_t current = readHardware32(aligned);
         const uint32_t shift = (phys & 3u) * 8u;
@@ -121,6 +131,12 @@ namespace ps2x::iop::detail
         {
             std::memcpy(m_ram.data() + phys, &value, sizeof(value));
             markOwned(phys, sizeof(value));
+            return;
+        }
+        // SPU2 data ports and key-on registers must receive one 16-bit write.
+        if (Spu2::contains(phys) && (phys & 1u) == 0u)
+        {
+            m_spu2.write16(phys, value);
             return;
         }
         write8(address, static_cast<uint8_t>(value));
@@ -139,6 +155,12 @@ namespace ps2x::iop::detail
         if ((phys & 3u) == 0u && phys >= ScratchBase && phys + 3u < ScratchBase + ScratchSize)
         {
             std::memcpy(m_scratch.data() + (phys - ScratchBase), &value, sizeof(value));
+            return;
+        }
+        if ((phys & 3u) == 0u && Spu2::contains(phys))
+        {
+            m_spu2.write16(phys, static_cast<uint16_t>(value));
+            m_spu2.write16(phys + 2u, static_cast<uint16_t>(value >> 16u));
             return;
         }
         if ((phys & 3u) == 0u)
@@ -215,6 +237,8 @@ namespace ps2x::iop::detail
 
     uint32_t IopMemory::readHardware32(uint32_t address) const
     {
+        if (Spu2::contains(address))
+            return m_spu2.read16(address) | (static_cast<uint32_t>(m_spu2.read16(address + 2u)) << 16u);
         if (IopSio2::contains(address))
             return m_sio2.read32(address);
         const auto value = m_hardware.find(address);
@@ -267,14 +291,7 @@ namespace ps2x::iop::detail
         const bool secondCore = address == kDmaSpu1Chcr;
         m_hardware[address] = value & ~kDmaStart;
 
-        const uint32_t statusAddress = 0x1F900344u + (secondCore ? 0x400u : 0u);
-        const uint32_t alignedStatus = statusAddress & ~3u;
-        const uint32_t shift = (statusAddress & 2u) * 8u;
-        uint32_t status = 0u;
-        if (const auto current = m_hardware.find(alignedStatus); current != m_hardware.end())
-            status = current->second;
-        status |= 0x80u << shift;
-        m_hardware[alignedStatus] = status;
+        const uint32_t core = secondCore ? 1u : 0u;
 
         const uint32_t blockControlAddress = address - sizeof(uint32_t);
         uint32_t blockControl = 0u;
@@ -283,6 +300,39 @@ namespace ps2x::iop::detail
         const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
         const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
         const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
+        const uint32_t madr = physicalAddress(readHardware32(address - 8u));
+        const uint64_t transferBytes = transferWords * sizeof(uint32_t);
+        const uint32_t tsaReg = Spu2::RegBase + core * 0x400u + Spu2::RegTsa;
+        const uint32_t tsa = (static_cast<uint32_t>(m_spu2.read16(tsaReg)) << 16u) | m_spu2.read16(tsaReg + 2u);
+        bool copied = false;
+        if (madr < RamSize && transferBytes <= RamSize - madr)
+        {
+            const size_t bytes = static_cast<size_t>(transferBytes);
+            if ((value & 1u) != 0u)
+                copied = m_spu2.dmaWrite(core, m_ram.data() + madr, bytes);
+            else
+            {
+                copied = m_spu2.dmaRead(core, m_ram.data() + madr, bytes);
+                if (copied)
+                    markOwned(madr, bytes);
+            }
+        }
+        traceIop([&](std::ostream &out) {
+            // Compare all transferred bytes, but only inside the bounded opt-in trace.
+            uint32_t iopHash = 2166136261u, spuHash = iopHash;
+            if (copied)
+                for (size_t i = 0; i < transferBytes; ++i)
+                {
+                    iopHash = (iopHash ^ m_ram[madr + i]) * 16777619u;
+                    const uint16_t sample = m_spu2.ram(tsa + static_cast<uint32_t>(i / 2u));
+                    spuHash = (spuHash ^ ((sample >> ((i & 1u) * 8u)) & 0xFFu)) * 16777619u;
+                }
+            out << "event=spu_dma core=" << core << " direction=" << ((value & 1u) ? "write" : "read")
+                << " copied=" << copied << " madr=0x" << std::hex << madr << " tsa=0x" << tsa
+                << " bytes=" << std::dec << transferBytes << " iop_hash=0x" << std::hex << iopHash
+                << " spu_hash=0x" << spuHash;
+        });
+        m_spu2.markDmaReady(core);
         m_pendingInterrupts.push_back(DmaStart{
             secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
             std::max<uint64_t>(transferWords * 2u, 64u),
