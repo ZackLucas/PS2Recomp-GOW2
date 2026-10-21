@@ -326,12 +326,52 @@ namespace
                expect(executor.lastGp == 0x89AB0u, "timer callback lost the registering module GP") &&
                expect(timrman.nextEventCycle(1000u) == 300u, "timer callback return did not rearm compare");
     }
+
+    bool testWaitSemaWithoutThread()
+    {
+        IopMemory memory;
+        IopKernel kernel(memory);
+        kernel.reset();
+
+        constexpr uint32_t descriptor = 0x2000u;
+        memory.write32(descriptor + 8u, 0u);  // initial count
+        memory.write32(descriptor + 12u, 1u); // maximum count
+        IopCpuState cpu{};
+        cpu.gpr[4] = descriptor;
+        if (!expect(kernel.dispatchSemaphoreImport(4u, cpu), "CreateSema was not handled") ||
+            !expect(static_cast<int32_t>(cpu.gpr[2]) > 0, "CreateSema did not return a semaphore id"))
+            return false;
+        const uint32_t id = cpu.gpr[2];
+
+        // No thread is running and the count is zero: the wait cannot park anything, and $v0 must not keep
+        // whatever the caller left in it (a stale value was read as a driver error).
+        cpu = {};
+        cpu.gpr[4] = id;
+        cpu.gpr[2] = 0x50000u;
+        if (!expect(kernel.waitWouldStall(static_cast<int>(id)), "an empty semaphore did not report a stalled wait") ||
+            !expect(kernel.dispatchSemaphoreImport(8u, cpu), "WaitSema was not handled") ||
+            !expect(static_cast<int32_t>(cpu.gpr[2]) == -419, "WaitSema without a thread left a stale $v0"))
+            return false;
+
+        cpu = {};
+        cpu.gpr[4] = id;
+        if (!expect(kernel.dispatchSemaphoreImport(6u, cpu), "SignalSema was not handled") ||
+            !expect(!kernel.waitWouldStall(static_cast<int>(id)), "a signalled semaphore still reported a stalled wait"))
+            return false;
+
+        cpu = {};
+        cpu.gpr[4] = id;
+        cpu.gpr[2] = 0x50000u;
+        return expect(kernel.dispatchSemaphoreImport(8u, cpu), "second WaitSema was not handled") &&
+               expect(cpu.gpr[2] == 0u, "WaitSema on a signalled semaphore did not succeed") &&
+               expect(kernel.waitWouldStall(static_cast<int>(id)), "WaitSema did not consume the count");
+    }
 }
 
 int main()
 {
     if (!testLoadcoreRebootLibraryMode() || !testCdvdSpecialControl() || !testCdvdSearchFile() ||
-        !testTimrmanPeriodicCallback())
+        !testTimrmanPeriodicCallback() || !testWaitSemaWithoutThread())
         return 1;
     std::cout << "ps2xIOP import tests passed\n";
     return 0;

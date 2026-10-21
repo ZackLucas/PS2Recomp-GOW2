@@ -418,6 +418,8 @@ namespace ps2x::iop::detail
                 cpu.yielded = true;
                 setV0(0);
             }
+            else
+                setV0(-419); // nothing to park: report an empty semaphore (as PollSema does), not a stale $v0
             return true;
         }
         case 11:
@@ -452,6 +454,14 @@ namespace ps2x::iop::detail
         default:
             return false;
         }
+    }
+
+    bool IopKernel::waitWouldStall(int semaphoreId) const
+    {
+        if (m_currentThread != nullptr)
+            return false;
+        const auto it = m_semaphores.find(semaphoreId);
+        return it != m_semaphores.end() && it->second.current <= 0;
     }
 
     void IopKernel::wakeOneSemaphore(int id)
