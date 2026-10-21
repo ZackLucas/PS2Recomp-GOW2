@@ -1,4 +1,5 @@
 #include "iop_stdio.h"
+#include "../../iop_trace.h"
 
 #include "../core/iop_cpu.h"
 #include "../core/iop_memory.h"
@@ -32,6 +33,13 @@ namespace ps2x::iop::detail
         const auto logFormatted = [&](std::string_view prefix, uint32_t formatAddress, const IopVarargReader &args)
         {
             const std::string text = formatIopString(m_memory, m_memory.readString(formatAddress, 2048u), args);
+            traceIop([&](auto &out) {
+                out << "event=printf pc=0x" << std::hex << cpu.pc << " ra=0x" << cpu.gpr[31]
+                    << " format=0x" << formatAddress << " a1=0x" << cpu.gpr[5]
+                    << " a2=0x" << cpu.gpr[6] << " a3=0x" << cpu.gpr[7]
+                    << " stack0=0x" << m_memory.read32(cpu.gpr[29]+16)
+                    << " stack1=0x" << m_memory.read32(cpu.gpr[29]+20);
+            });
             m_host.log(LogLevel::Info, std::string(prefix) + text);
             setV0(static_cast<uint32_t>(text.size()));
         };

@@ -1,6 +1,7 @@
 #include "ps2x/iop/iop_subsystem.h"
 
 #include "iop_service.h"
+#include "iop_trace.h"
 #include "iop_module_manager.h"
 #include "emulator/iop_emulator.h"
 #include "module_factories.h"
@@ -209,6 +210,12 @@ namespace ps2x::iop
 
     void IopSubsystem::onSifTransfer(const SifTransfer &transfer)
     {
+        detail::traceIop([&](auto &out) {
+            out << "event=sif_transfer kind=" << static_cast<unsigned>(transfer.kind)
+                << " phase=" << static_cast<unsigned>(transfer.phase)
+                << " source=0x" << std::hex << transfer.sourceAddress
+                << " destination=0x" << transfer.destinationAddress << " size=" << std::dec << transfer.size;
+        });
         for (auto &service : m_impl->coreServices)
         {
             if (service && m_impl->serviceActive(*service))

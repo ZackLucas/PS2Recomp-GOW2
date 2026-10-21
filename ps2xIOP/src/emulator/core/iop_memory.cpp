@@ -1,4 +1,5 @@
 #include "iop_memory.h"
+#include "../../iop_trace.h"
 
 #include <algorithm>
 #include <cstring>
@@ -259,6 +260,10 @@ namespace ps2x::iop::detail
         if ((address != kDmaSpu0Chcr && address != kDmaSpu1Chcr) || (value & kDmaStart) == 0u)
             return;
 
+        traceIop([&](auto &out) {
+            out << "event=spu_dma chcr_address=0x" << std::hex << address << " chcr=0x" << value
+                << " madr=0x" << readHardware32(address-8u) << " bcr=0x" << readHardware32(address-4u);
+        });
         const bool secondCore = address == kDmaSpu1Chcr;
         m_hardware[address] = value & ~kDmaStart;
 

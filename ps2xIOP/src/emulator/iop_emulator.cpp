@@ -1,4 +1,6 @@
 #include "iop_emulator.h"
+#include "../iop_trace.h"
+#include <cstdio>
 #include "imports/iop_cdvd.h"
 #include "core/iop_cpu.h"
 #include "imports/iop_heaplib.h"
@@ -414,6 +416,23 @@ namespace ps2x::iop::detail
             if (checkInterrupt(cpu))
                 return true;
 
+            static const auto traceRange = [] {
+                std::pair<unsigned, unsigned> range{1u, 0u};
+                if (const char *value = std::getenv("PS2_TRACE_IOP_PC"))
+                    if (std::sscanf(value, "%x-%x", &range.first, &range.second) != 2)
+                        range = {1u, 0u};
+                return range;
+            }();
+            if (cpu.pc >= traceRange.first && cpu.pc <= traceRange.second)
+                traceIop([&](auto &out) {
+                    out << "event=pc pc=0x" << std::hex << cpu.pc << " instruction=0x" << memory.read32(cpu.pc);
+                    for (unsigned r : {2u, 3u, 4u, 5u, 6u, 7u, 16u, 17u, 18u, 19u, 29u, 31u})
+                        out << " r" << std::dec << r << "=0x" << std::hex << cpu.gpr[r];
+                    out << " s1_word=0x" << memory.read32(cpu.gpr[17])
+                        << " s2_word=0x" << memory.read32(cpu.gpr[18])
+                        << " s3_word=0x" << memory.read32(cpu.gpr[19]);
+                });
+
             if (const auto import = imports.decode(cpu.pc))
             {
                 const ImportDisposition disposition = dispatchImport(*import, cpu);
@@ -649,6 +668,10 @@ namespace ps2x::iop::detail
             module.size = loaded.size;
             module.entry = loaded.entry;
             module.gp = loaded.gp;
+            traceIop([&](auto &out) {
+                out << "event=module path=" << module.path << " base=0x" << std::hex << module.base
+                    << " size=0x" << module.size << " entry=0x" << module.entry;
+            });
 
             // modload calls start(argc, argv): argv[0] is the module path, then one entry per
             // NUL-separated string of the argument buffer, terminated by a NULL pointer.
@@ -701,7 +724,7 @@ namespace ps2x::iop::detail
             modules[module.id] = std::move(module);
 
             std::ostringstream out;
-            out << "[IOP] loaded IRX id=" << result.moduleId
+            out << "[IOP] loaded IRX path=" << modules[result.moduleId].path << " id=" << result.moduleId
                 << " entry=0x" << std::hex << modules[result.moduleId].entry
                 << " base=0x" << modules[result.moduleId].base
                 << " start=" << std::dec << result.startResult;

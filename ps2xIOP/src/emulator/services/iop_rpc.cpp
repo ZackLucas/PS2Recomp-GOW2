@@ -1,4 +1,5 @@
 #include "iop_rpc.h"
+#include "../../iop_trace.h"
 #include <sstream>
 #include <iomanip>
 #include <cstdlib>
@@ -101,6 +102,11 @@ namespace ps2x::iop::detail
             const PendingTransfer &transfer = pending[i];
             if (!m_memory.readRam(transfer.source, scratch.data(), transfer.size) || !m_host.writeGuest(transfer.destination, scratch.data(), transfer.size))
                 return 0u;
+            traceIop([&](auto &out) {
+                out << "event=iop_dma source=0x" << std::hex << transfer.source
+                    << " destination=0x" << transfer.destination << " size=" << std::dec << transfer.size
+                    << " pc=0x" << std::hex << cpu.pc << " ra=0x" << cpu.gpr[31];
+            });
             if (traceDma)
             {
                 std::ostringstream out;
@@ -229,6 +235,16 @@ namespace ps2x::iop::detail
             std::memcpy(packet.data() + 4u, &extraDestination, sizeof(extraDestination));
             std::memcpy(packet.data() + 8u, &commandId, sizeof(commandId));
 
+            traceIop([&](auto &out) {
+                out << "event=iop_command id=0x" << std::hex << commandId
+                    << " pc=0x" << cpu.pc << " ra=0x" << cpu.gpr[31]
+                    << " packet=0x" << packetAddress << " size=" << std::dec << packetSize
+                    << " extra_source=0x" << std::hex << extraSource
+                    << " extra_destination=0x" << extraDestination << " extra_size=" << std::dec << extraSize
+                    << " words=" << std::hex;
+                for (uint32_t i = 16; i + 4 <= packetSize && i < 48; i += 4)
+                    out << "0x" << m_memory.read32(packetAddress + i) << ',';
+            });
             if (!m_host.sendSifCommand(commandId, packet.data(), packetSize))
             {
                 // A command without an EE handler is still a completed DMA on  real hardware. Only malformed packets fail above.
@@ -277,6 +293,21 @@ namespace ps2x::iop::detail
             setV0(0);
             return true;
         case 23:
+            traceIop([&](auto &out) {
+                out << "event=get_other_data_stub pc=0x" << std::hex << cpu.pc
+                    << " ra=0x" << cpu.gpr[31] << " descriptor=0x" << cpu.gpr[4]
+                    << " source=0x" << cpu.gpr[5] << " destination=0x" << cpu.gpr[6]
+                    << " size=" << std::dec << cpu.gpr[7];
+                std::array<uint32_t, 8> words{};
+                const uint32_t size = std::min<uint32_t>(cpu.gpr[7], sizeof(words));
+                const bool read = m_host.readGuest(cpu.gpr[5], words.data(), size);
+                out << " source_read=" << read << " source_words=" << std::hex;
+                for (uint32_t i = 0; read && i < size / 4; ++i)
+                    out << "0x" << words[i] << ',';
+                out << " destination_words=";
+                for (uint32_t i = 0; i < size / 4; ++i)
+                    out << "0x" << m_memory.read32(cpu.gpr[6] + i * 4) << ',';
+            });
             setV0(0);
             return true;
         case 24: // RemoveRpc
@@ -313,6 +344,14 @@ namespace ps2x::iop::detail
             return result;
 
         RpcServer &server = serverIt->second;
+        traceIop([&](auto &out) {
+            out << "event=rpc_begin sid=0x" << std::hex << request.sid
+                << " function=0x" << request.function << " mode=0x" << request.mode
+                << " handler=0x" << server.function << " iop_buffer=0x" << server.buffer
+                << " send=0x" << request.send.address << " send_size=" << std::dec << request.send.size
+                << " receive=0x" << std::hex << request.receive.address
+                << " receive_size=" << std::dec << request.receive.size;
+        });
         if (request.send.size != 0u && server.buffer != 0u)
         {
             const uint32_t copySize = std::min<uint32_t>(request.send.size, IopMemory::RamSize - std::min(server.buffer, IopMemory::RamSize));
@@ -324,12 +363,21 @@ namespace ps2x::iop::detail
             }
         }
 
+        traceIop([&](auto &out) {
+            out << "event=rpc_payload sid=0x" << std::hex << request.sid << " words=";
+            for (uint32_t i = 0; i < std::min<uint32_t>(request.send.size, 32u); i += 4)
+                out << "0x" << m_memory.read32(server.buffer + i) << ',';
+        });
         uint32_t returnPointer = executor.executeGuestFunction(server.function,
                                                                request.function,
                                                                server.buffer,
                                                                request.send.size,
                                                                0u,
                                                                server.gp);
+        traceIop([&](auto &out) {
+            out << "event=rpc_return sid=0x" << std::hex << request.sid
+                << " function=0x" << request.function << " pointer=0x" << returnPointer;
+        });
         if (returnPointer == 0u)
             returnPointer = server.buffer;
         if (request.receive.address != 0u && request.receive.size != 0u && returnPointer != 0u)
