@@ -414,25 +414,32 @@ void register_ps2_gs_tests()
 {
     MiniTest::Case("PS2GS", [](TestCase &tc)
     {
-        tc.Run("GS CSR/IMR support coherent 64-bit and 32-bit access", [](TestCase &t)
+        tc.Run("GS CSR keeps ID/REV/FIELD read-only and clears event bits on write-one", [](TestCase &t)
         {
+            // CSR (A29): bits 0..4 (SIGNAL, FINISH, HSINT, VSINT, EDWINT) are write-one-to-clear; FIELD, FIFO, REV
+            // and ID are read-only (PCSX2 reads 0x551B4000 plus FIELD and the events). GoW2's FINISH handler writes
+            // 2 after every FINISH, which used to wipe FIELD; its init writes 6, which used to set HSINT.
             PS2Memory mem;
             t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
 
             constexpr uint32_t kGsCsr = 0x12001000u;
             constexpr uint32_t kGsImr = 0x12001010u;
 
-            const uint64_t csrPattern = 0xA1B2C3D4E5F60718ull;
-            mem.write64(kGsCsr, csrPattern);
-            t.Equals(mem.read64(kGsCsr), csrPattern, "64-bit CSR read should match prior 64-bit write");
-            t.Equals(mem.read32(kGsCsr), static_cast<uint32_t>(csrPattern & 0xFFFFFFFFull), "CSR low dword read should match");
-            t.Equals(mem.read32(kGsCsr + 4u), static_cast<uint32_t>(csrPattern >> 32), "CSR high dword read should match");
+            t.Equals(mem.read64(kGsCsr), 0x551B4000ull, "CSR should read ID 0x55, REV 0x1B and an empty FIFO");
 
-            mem.write32(kGsCsr, 0x11223344u);
-            t.Equals(mem.read64(kGsCsr), 0xA1B2C3D411223344ull, "32-bit low write should preserve CSR high dword");
+            mem.gs().csr.fetch_or(0x2000ull | 0x1Full); // FIELD from the vsync worker, every event pending
+            mem.write64(kGsCsr, 0x2ull);
+            t.Equals(mem.read64(kGsCsr), 0x551B6000ull | 0x1Dull, "writing 2 should clear only FINISH");
+            mem.write64(kGsCsr, 0x6ull);
+            t.Equals(mem.read64(kGsCsr), 0x551B6000ull | 0x19ull, "writing 6 should clear HSINT, not set it");
+            mem.write32(kGsCsr, 0x19u);
+            t.Equals(mem.read64(kGsCsr), 0x551B6000ull, "a 32-bit write should clear the low event bits");
 
+            mem.write64(kGsCsr, 0xA1B2C3D4E5F60718ull & ~0x1Full);
+            t.Equals(mem.read64(kGsCsr), 0x551B6000ull, "read-only fields and the high dword should ignore writes");
             mem.write32(kGsCsr + 4u, 0x55667788u);
-            t.Equals(mem.read64(kGsCsr), 0x5566778811223344ull, "32-bit high write should preserve CSR low dword");
+            t.Equals(mem.read32(kGsCsr + 4u), 0u, "the CSR high dword should stay 0");
+            t.Equals(mem.read32(kGsCsr), 0x551B6000u, "the CSR low dword should keep FIELD, FIFO, REV and ID");
 
             const uint64_t imrPattern = 0x0123456789ABCDEFull;
             mem.write64(kGsImr, imrPattern);

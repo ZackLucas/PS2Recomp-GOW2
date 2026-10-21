@@ -99,46 +99,25 @@ namespace
 
     constexpr uint32_t kGsCsrRegOffset = 0x1000u;
 
-    // Atomically apply a 32-bit write to one half (off=0 low dword, off=4 high
-    // dword) of the GS CSR register. Bits 0..1 of the low dword (SIGNAL/FINISH) are
-    // write-one-to-clear; everything else is a plain merge. Uses compare_exchange
-    // so the whole read-modify-write is a single atomic step -- this register is
-    // also touched by the vsync worker (FIELD bit) and the GIF (SIGNAL/FINISH) on
-    // other threads, so a load-then-store here would race with them.
+    // GS CSR read-only part as PCSX2 reports it: ID 0x55, REV 0x1B, FIFO empty (A29).
+    constexpr uint64_t kGsCsrReadOnlyValue = 0x551B4000ull;
+    // CSR bits a guest write can change: SIGNAL, FINISH, HSINT, VSINT and EDWINT are write-one-to-clear.
+    // FLUSH/RESET (bits 8..9) are actions that read back as 0; NFIELD, FIELD, FIFO, REV and ID (bits 12..31)
+    // and the high dword are read-only. The bits that can change are only cleared, in one atomic step: the
+    // vsync worker (FIELD) and the GIF (SIGNAL/FINISH) set bits on other threads.
+    constexpr uint64_t kGsCsrW1cMask = 0x1Full;
+
+    // A 32-bit write to one half (off=0 low dword, off=4 high dword) of the GS CSR.
     inline void writeCsrHalf(std::atomic<uint64_t> &csr, uint32_t off, uint32_t value)
     {
-        constexpr uint32_t kW1cMask = 0x3u;
-        uint64_t expected = csr.load();
-        uint64_t desired;
-        do
-        {
-            if (off == 0u)
-            {
-                uint32_t oldLow = static_cast<uint32_t>(expected & 0xFFFFFFFFull);
-                uint32_t mergedLow = (oldLow & kW1cMask) | (value & ~kW1cMask);
-                desired = (expected & 0xFFFFFFFF00000000ull) | static_cast<uint64_t>(mergedLow);
-                desired &= ~static_cast<uint64_t>(value & kW1cMask);
-            }
-            else
-            {
-                uint64_t mask = 0xFFFFFFFFull << (off * 8u);
-                desired = (expected & ~mask) | (static_cast<uint64_t>(value) << (off * 8u));
-            }
-        } while (!csr.compare_exchange_weak(expected, desired));
+        if (off == 0u)
+            csr.fetch_and(~(static_cast<uint64_t>(value) & kGsCsrW1cMask));
     }
 
-    // Same as writeCsrHalf but for a full 64-bit CSR write (bits 0..1 are still
-    // write-one-to-clear against the current value).
+    // A full 64-bit write to the GS CSR.
     inline void writeCsrFull(std::atomic<uint64_t> &csr, uint64_t value)
     {
-        constexpr uint64_t kW1cMask = 0x3ull;
-        uint64_t expected = csr.load();
-        uint64_t desired;
-        do
-        {
-            desired = (expected & kW1cMask) | (value & ~kW1cMask);
-            desired &= ~(value & kW1cMask);
-        } while (!csr.compare_exchange_weak(expected, desired));
+        csr.fetch_and(~(value & kGsCsrW1cMask));
     }
 
     constexpr std::array<uint32_t, 4> kEeTimerBases = {
@@ -359,8 +338,8 @@ bool PS2Memory::initialize(size_t ramSize)
         // Initialize GS registers
         memset(&gs_regs, 0, sizeof(gs_regs));
         // memset zero-fills std::atomic<uint64_t>::csr's bytes, which is not itself
-        // a guaranteed-valid atomic store; make the zero-initialization explicit.
-        gs_regs.csr.store(0);
+        // a guaranteed-valid atomic store; set the CSR explicitly (read-only ID/REV/FIFO).
+        gs_regs.csr.store(kGsCsrReadOnlyValue);
         gs_regs.dispfb1 = (0ULL << 0) | (10ULL << 9) | (0ULL << 15) | (0ULL << 32) | (0ULL << 43);
         gs_regs.display1 = (0ULL << 0) | (0ULL << 12) | (0ULL << 23) | (0ULL << 27) | (639ULL << 32) | (447ULL << 44);
         gs_regs.dispfb2 = gs_regs.dispfb1;
@@ -957,8 +936,8 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
         if (regOff == kGsCsrRegOffset)
         {
-            // CSR: bits 0..1 of the low dword are write-one-to-clear status bits.
-            // Done as a single atomic RMW -- see writeCsrHalf's comment.
+            // CSR: bits 0..4 of the low dword are write-one-to-clear, the rest is
+            // read-only -- see kGsCsrW1cMask.
             writeCsrHalf(gs_regs.csr, off, value);
         }
         else if (uint64_t *reg = gsRegPtr(gs_regs, address))
@@ -1016,8 +995,8 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
         if (regOff == kGsCsrRegOffset)
         {
-            // CSR: bits 0..1 are write-one-to-clear status bits. Done as a single
-            // atomic RMW -- see writeCsrFull's comment.
+            // CSR: bits 0..4 are write-one-to-clear, the rest is read-only -- see
+            // kGsCsrW1cMask.
             writeCsrFull(gs_regs.csr, value);
         }
         else if (uint64_t *reg = gsRegPtr(gs_regs, address))
