@@ -8,12 +8,13 @@
   "status": "in-progress",
   "targets": ["Linux"],
   "toolchain": "PS2Recomp",
-  "approach": "Static recompilation of the EE ELF with PS2Recomp; IOP modules run in ps2xIOP, VU1/GS interpreted",
+  "approach": "Static recompilation of the EE ELF with PS2Recomp; IOP modules run in ps2xIOP; VU1 microcode translated to native C++ (interpreter fallback); GS rendered on the GPU (OpenGL) or the CPU",
   "maintainers": [{ "name": "ZackLucas", "link": "https://github.com/ZackLucas" }],
   "help": [
-    "VU1 and GS performance (menu runs at ~3% speed)",
+    "Performance (main menu runs at ~15% speed)",
+    "Kratos' face missing on the main menu",
     "Memory card authentication (SecrAuthCard)",
     "Sound (989snd / SPU2)"
   ],
-  "notes": "Boots to a correctly rendered main menu with working controller input; far too slow to play. See games/gow2/PROGRESS.md on the gow2 branch."
+  "notes": "Boots to the main menu with working controller input; the menu renders like PCSX2 except Kratos' face. Far too slow to play. Latest work: games/gow2/PROGRESS.md on the gow2-gpu-gs branch."
 }
