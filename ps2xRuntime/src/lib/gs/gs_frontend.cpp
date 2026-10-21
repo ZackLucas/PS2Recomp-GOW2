@@ -50,6 +50,45 @@ namespace
         }();
         return at && present >= at && present - at < count;
     }
+    // PS2_GS_DRAWSEQ=N[:K]: the frames after presents N .. N+K-1 as a sequence of passes (runs of vertices that share
+    // PRIM, FRAME, TEX0 base, ALPHA, TEST and ZBUF), one line each, in the format of games/gow2/scripts/gs_passes.py, to
+    // diff against a PCSX2 dump. PS2_GS_DRAWSEQ_TBP=<tbp> also lists every vertex of the passes that sample that texture.
+    bool drawSeqWanted(uint32_t present)
+    {
+        static const char *env = std::getenv("PS2_GS_DRAWSEQ");
+        static const uint32_t at = env ? std::atoi(env) : 0;
+        static const uint32_t count = [] {
+            const char *colon = env ? std::strchr(env, ':') : nullptr;
+            return colon ? std::max(1, std::atoi(colon + 1)) : 1;
+        }();
+        return at && present >= at && present - at < count;
+    }
+    struct DrawSeqRun
+    {
+        uint64_t key[8]{};
+        uint32_t verts = 0, adc = 0;
+        float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
+    };
+    DrawSeqRun g_drawSeq;
+    uint32_t g_drawSeqIndex = 0;
+    void drawSeqFlush()
+    {
+        const DrawSeqRun &r = g_drawSeq;
+        if (r.verts != 0)
+        {
+            const uint64_t pr = r.key[0];
+            std::fprintf(stderr,
+                         "[drawseq] #%3u prim=%03llx(t%llu tme%llu abe%llu fst%llu ctx%llu) fbp=%llu fbw=%llu fbmsk=%08llx tbp=%lld "
+                         "alpha=%010llx test=%llx zbp=%llu verts=%u adc=%u x=%.1f..%.1f y=%.1f..%.1f\n",
+                         g_drawSeqIndex, (unsigned long long)pr, (unsigned long long)(pr & 7), (unsigned long long)((pr >> 4) & 1),
+                         (unsigned long long)((pr >> 6) & 1), (unsigned long long)((pr >> 8) & 1), (unsigned long long)((pr >> 9) & 1),
+                         (unsigned long long)r.key[1], (unsigned long long)r.key[2], (unsigned long long)r.key[3], (long long)r.key[4],
+                         (unsigned long long)r.key[5], (unsigned long long)r.key[6], (unsigned long long)r.key[7], r.verts, r.adc, r.x0, r.x1,
+                         r.y0, r.y1);
+            ++g_drawSeqIndex;
+        }
+        g_drawSeq = DrawSeqRun{};
+    }
     static constexpr uint32_t kHostFrameWidth = 640u;
 
     GSPrimReg decodePrimRegister(uint64_t value)
@@ -623,6 +662,13 @@ void GS::latchHostPresentationFrame()
             std::fprintf(stderr, "[framesum] %6u adc=%-6u %s  x=[%.1f,%.1f] y=[%.1f,%.1f] z=[%.0f,%.0f]\n", kv.second.count, kv.second.culled, kv.first.c_str(),
                          kv.second.x0, kv.second.x1, kv.second.y0, kv.second.y1, kv.second.z0, kv.second.z1);
         g_frameSum.clear();
+    }
+    if (drawSeqWanted(presentIndex))
+    {
+        std::lock_guard<std::mutex> lk(g_gsLogMutex);
+        drawSeqFlush();
+        std::fprintf(stderr, "[drawseq] present %u: %u passes\n", presentIndex, g_drawSeqIndex);
+        g_drawSeqIndex = 0;
     }
     // PS2_GS_PRESENT_DUMP=N[:A[:K]]: every N-th presented frame (from present A, at most K of them), as the backend
     // returned it (before the window scaling), goes to present_NNNNNN.ppm in the working directory, to compare pixel
@@ -1654,6 +1700,33 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
 
 void GS::vertexKick(bool drawing)
 {
+    if (drawSeqWanted(g_gsPresentCount.load()))
+    {
+        const GSContext &c = m_ctx[m_prim.ctxt ? 1 : 0];
+        const uint64_t prim = static_cast<uint64_t>(m_prim.type) | (uint64_t(m_prim.iip) << 3) | (uint64_t(m_prim.tme) << 4) |
+                              (uint64_t(m_prim.fge) << 5) | (uint64_t(m_prim.abe) << 6) | (uint64_t(m_prim.aa1) << 7) |
+                              (uint64_t(m_prim.fst) << 8) | (uint64_t(m_prim.ctxt) << 9) | (uint64_t(m_prim.fix) << 10);
+        const uint64_t key[8] = {prim, c.frame.fbp, c.frame.fbw, c.frame.fbmsk, m_prim.tme ? uint64_t(c.tex0.tbp0) : ~0ull,
+                                 c.alpha, c.test, c.zbuf.zbp};
+        const GSVertex &v = m_vtxQueue[m_vtxCount % kMaxVerts];
+        const float x = v.x - c.xyoffset.ofx / 16.0f, y = v.y - c.xyoffset.ofy / 16.0f;
+        static const long seqTbp = std::getenv("PS2_GS_DRAWSEQ_TBP") ? std::strtol(std::getenv("PS2_GS_DRAWSEQ_TBP"), nullptr, 0) : -1;
+        std::lock_guard<std::mutex> lk(g_gsLogMutex);
+        if (std::memcmp(key, g_drawSeq.key, sizeof key) != 0 || g_drawSeq.verts == 0)
+        {
+            drawSeqFlush();
+            std::memcpy(g_drawSeq.key, key, sizeof key);
+        }
+        DrawSeqRun &r = g_drawSeq;
+        ++r.verts;
+        r.adc += drawing ? 0u : 1u;
+        r.x0 = std::min(r.x0, x); r.x1 = std::max(r.x1, x);
+        r.y0 = std::min(r.y0, y); r.y1 = std::max(r.y1, y);
+        if (seqTbp >= 0 && m_prim.tme && c.tex0.tbp0 == (uint32_t)seqTbp)
+            std::fprintf(stderr, "[drawseq]      x=%7.2f y=%7.2f z=%08x kick=%d rgba=%02x%02x%02x%02x uv=%04x%04x st=%08x,%08x q=%08x\n", x, y,
+                         (uint32_t)v.z, drawing ? 1 : 0, v.a, v.b, v.g, v.r, v.v, v.u, *(const uint32_t *)&v.s, *(const uint32_t *)&v.t,
+                         *(const uint32_t *)&v.q);
+    }
     ++m_vtxCount;
     ++m_vtxIndex;
 
