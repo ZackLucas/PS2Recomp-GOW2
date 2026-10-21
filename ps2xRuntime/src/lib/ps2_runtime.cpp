@@ -2399,11 +2399,54 @@ uint32_t PS2Runtime::reserveAsyncCallbackStack(uint32_t size, uint32_t alignment
     return top - 0x10u;
 }
 
+namespace
+{
+    // PS2_GS_CSR_LOG=N[:V] (A29 probe): the first N EE loads and stores of the GS CSR (0x12001000) from VSync V on,
+    // with the value read or written, the CSR right after, pc, ra and the VSync tick.
+    struct GsCsrLog
+    {
+        int max = 0;
+        uint64_t fromVsync = 0;
+        std::atomic<int> count{0};
+        GsCsrLog()
+        {
+            if (const char *s = std::getenv("PS2_GS_CSR_LOG"))
+            {
+                max = std::atoi(s);
+                if (const char *c = std::strchr(s, ':'))
+                    fromVsync = std::strtoull(c + 1, nullptr, 10);
+            }
+        }
+    } g_gsCsrLog;
+
+    inline bool isGsCsrAccess(uint32_t vaddr)
+    {
+        return g_gsCsrLog.max > 0 && (vaddr & 0x1FFFFFF8u) == 0x12001000u;
+    }
+
+    void logGsCsr(PS2Memory &mem, const char *op, uint32_t vaddr, uint64_t value, const R5900Context *ctx)
+    {
+        const uint64_t tick = mem.gs().vsyncTick.load(std::memory_order_acquire);
+        if (tick < g_gsCsrLog.fromVsync)
+            return;
+        const int n = g_gsCsrLog.count.fetch_add(1);
+        if (n >= g_gsCsrLog.max)
+            return;
+        std::fprintf(stderr, "[csr] #%d %s addr=%08x value=%016llx csr=%016llx pc=%08x ra=%08x vsync=%llu\n", n, op,
+                     vaddr, static_cast<unsigned long long>(value), static_cast<unsigned long long>(mem.gs().csr.load()),
+                     ctx ? ctx->pc : 0u, ctx ? static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31])) : 0u,
+                     static_cast<unsigned long long>(tick));
+    }
+}
+
 uint8_t PS2Runtime::Load8(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
 {
     try
     {
-        return m_memory.read8(vaddr);
+        const uint8_t value = m_memory.read8(vaddr);
+        if (isGsCsrAccess(vaddr))
+            logGsCsr(m_memory, "read8", vaddr, value, ctx);
+        return value;
     }
     catch (const std::exception &)
     {
@@ -2416,7 +2459,10 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
 {
     try
     {
-        return m_memory.read16(vaddr);
+        const uint16_t value = m_memory.read16(vaddr);
+        if (isGsCsrAccess(vaddr))
+            logGsCsr(m_memory, "read16", vaddr, value, ctx);
+        return value;
     }
     catch (const std::exception &)
     {
@@ -2429,7 +2475,10 @@ uint32_t PS2Runtime::Load32(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
 {
     try
     {
-        return m_memory.read32(vaddr);
+        const uint32_t value = m_memory.read32(vaddr);
+        if (isGsCsrAccess(vaddr))
+            logGsCsr(m_memory, "read32", vaddr, value, ctx);
+        return value;
     }
     catch (const std::exception &)
     {
@@ -2442,7 +2491,10 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
 {
     try
     {
-        return m_memory.read64(vaddr);
+        const uint64_t value = m_memory.read64(vaddr);
+        if (isGsCsrAccess(vaddr))
+            logGsCsr(m_memory, "read64", vaddr, value, ctx);
+        return value;
     }
     catch (const std::exception &)
     {
@@ -2470,6 +2522,8 @@ void PS2Runtime::Store8(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint8
     try
     {
         m_memory.write8(vaddr, value);
+        if (isGsCsrAccess(vaddr))
+            logGsCsr(m_memory, "write8", vaddr, value, ctx);
     }
     catch (const std::exception &)
     {
@@ -2483,6 +2537,8 @@ void PS2Runtime::Store16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint
     try
     {
         m_memory.write16(vaddr, value);
+        if (isGsCsrAccess(vaddr))
+            logGsCsr(m_memory, "write16", vaddr, value, ctx);
     }
     catch (const std::exception &)
     {
@@ -2496,6 +2552,8 @@ void PS2Runtime::Store32(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint
     try
     {
         m_memory.write32(vaddr, value);
+        if (isGsCsrAccess(vaddr))
+            logGsCsr(m_memory, "write32", vaddr, value, ctx);
         drainCompletedDmacHandlers(rdram);
     }
     catch (const std::exception &)
@@ -2510,6 +2568,8 @@ void PS2Runtime::Store64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint
     try
     {
         m_memory.write64(vaddr, value);
+        if (isGsCsrAccess(vaddr))
+            logGsCsr(m_memory, "write64", vaddr, value, ctx);
     }
     catch (const std::exception &)
     {
