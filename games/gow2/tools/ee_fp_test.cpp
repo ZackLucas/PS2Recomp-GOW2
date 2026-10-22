@@ -41,7 +41,7 @@ int main()
     expect("0*inf = 0 (not NaN)", mul(0.0f, inf), 0u);
     expect("inf-inf = 0", sub(inf, inf), 0u);
     // -Fmax + 1 is -Fmax to nearest, and one ulp less in magnitude toward zero.
-    expect("NaN(neg sign)+1 -> -Fmax+1", add(nan, 1.0f), PS2X_EE_FP_ROUND == 2 ? 0xFF7FFFFEu : 0xFF7FFFFFu);
+    expect("NaN(neg sign)+1 -> -Fmax+1", add(nan, 1.0f), PS2X_EE_FP_ROUND >= 2 ? 0xFF7FFFFEu : 0xFF7FFFFFu);
     expect("denormal flush in add", add(den, 0.0f), 0u);
     expect("denormal result flushed", mul(floatOf(0x00800000u), 0.5f), 0u);
     expect("1.5+2.25", add(1.5f, 2.25f), bitsOf(3.75f));

@@ -104,6 +104,12 @@ extern "C" __attribute__((noinline, cold)) void ps2x_fp_report(const char *kind,
 }
 
 extern "C" uint64_t ps2x_fp_round_stats[4][2] = {};
+static uint32_t ps2xFpClsFromEnv()
+{
+    const char *v = std::getenv("PS2X_FP_CLS");
+    return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0x3Fu;
+}
+extern "C" uint32_t ps2x_fp_cls = ps2xFpClsFromEnv();
 
 void ps2WatchHit(uint32_t guestAddr, uint32_t size, uint64_t valueLo, uint64_t valueHi, const char *op, const R5900Context *ctx)
 {
